@@ -562,7 +562,7 @@ void RenderTask::run()
 }
 
 void RenderTask::start(const RenderParam& renderParam,
-                       const QRect& rect, bool prefetch)
+                       const QRect& rect, bool prefetch, int priority)
 {
     m_renderParam = renderParam;
 
@@ -575,7 +575,7 @@ void RenderTask::start(const RenderParam& renderParam,
 
     resetCancellation();
 
-    QThreadPool::globalInstance()->start(this, prefetch ? 1 : 2);
+    QThreadPool::globalInstance()->start(this, priority >= 0 ? priority : (prefetch ? 1 : 2));
 }
 
 void RenderTask::deleteParentLater()

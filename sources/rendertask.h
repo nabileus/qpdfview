@@ -105,7 +105,7 @@ public:
     void run();
 
     void start(const RenderParam& renderParam,
-               const QRect& rect, bool prefetch);
+               const QRect& rect, bool prefetch, int priority = -1);
 
     void cancel(bool force = false) { setCancellation(force); }
 

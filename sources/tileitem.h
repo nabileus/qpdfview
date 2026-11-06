@@ -96,6 +96,53 @@ private:
 
 };
 
+// A low-resolution render of a whole page, kept across zoom changes and drawn
+// in place of tiles that are still rendering, so pages never appear blank.
+class PreviewItem : public RenderTaskParent
+{
+public:
+    PreviewItem(PageItem* page);
+    ~PreviewItem();
+
+    // Starts rendering if there is no usable preview or the page content changed.
+    void prepare();
+
+    // Draws the part of the preview covering the given tile rectangle; returns false if there is no usable preview.
+    bool paint(QPainter* painter, QPointF topLeft, const QRectF& tileRect);
+
+    // The page content changed (e.g. annotations): re-render, but keep showing the old preview meanwhile.
+    void markStale() { m_stale = true; }
+
+private:
+    void on_finished(const RenderParam& renderParam,
+                     const QRect& rect, bool prefetch,
+                     const QImage& image, const QRectF& cropRect);
+    void on_canceled();
+
+private:
+    Q_DISABLE_COPY(PreviewItem)
+
+    PageItem* m_page;
+
+    QPixmap m_pixmap;
+    RenderParam m_pixmapParam;
+    bool m_stale;
+
+    RenderTask m_renderTask;
+
+    bool isUsable() const;
+    RenderParam previewParam() const;
+
+    // Previews of all pages share a memory budget; the least recently used are dropped first.
+    static QList< PreviewItem* > s_recentlyUsed;
+    static qint64 s_totalBytes;
+
+    void touch();
+    void forget();
+    static void enforceBudget(PreviewItem* keep);
+
+};
+
 } // qpdfview
 
 #endif // PAGEITEM_H

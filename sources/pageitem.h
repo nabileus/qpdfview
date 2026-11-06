@@ -51,12 +51,14 @@ class Page;
 class Settings;
 class RenderTask;
 class TileItem;
+class PreviewItem;
 
 class PageItem : public QGraphicsObject
 {
     Q_OBJECT
 
     friend class TileItem;
+    friend class PreviewItem;
 
 public:
     enum PaintMode
@@ -276,6 +278,9 @@ private:
     void prepareGeometry();
 
     QVector< TileItem* > m_tileItems;
+
+    // Low-resolution render of the whole page, shown (blurry) where tiles are still rendering.
+    PreviewItem* m_previewItem;
     mutable QSet< TileItem* > m_exposedTileItems;
 
     void prepareTiling();

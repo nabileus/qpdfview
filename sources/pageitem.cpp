@@ -208,7 +208,8 @@ PageItem::PageItem(Model::Page* page, int index, PaintMode paintMode, QGraphicsI
     m_transform(),
     m_normalizedTransform(),
     m_boundingRect(),
-    m_tileItems()
+    m_tileItems(),
+    m_previewItem(0)
 {
     if(s_settings == 0)
     {
@@ -225,6 +226,11 @@ PageItem::PageItem(Model::Page* page, int index, PaintMode paintMode, QGraphicsI
         m_tileItems.squeeze();
 
         m_tileItems.replace(0, new TileItem(this));
+    }
+
+    if(!thumbnailMode())
+    {
+        m_previewItem = new PreviewItem(this);
     }
 
     prepareGeometry();
@@ -255,6 +261,8 @@ PageItem::~PageItem()
     qDeleteAll(m_formFields);
 
     qDeleteAll(m_tileItems);
+
+    delete m_previewItem;
 }
 
 QRectF PageItem::boundingRect() const
@@ -397,6 +405,11 @@ void PageItem::refresh(bool keepObsoletePixmaps, bool dropCachedPixmaps)
 
     if(dropCachedPixmaps)
     {
+        if(m_previewItem != 0)
+        {
+            m_previewItem->markStale();
+        }
+
         TileItem::dropCachedPixmaps(this);
     }
 

@@ -114,6 +114,12 @@ bool TileItem::paint(QPainter* painter, QPointF topLeft)
 
         return false;
     }
+    else if(!m_pixmapError && m_page->m_previewItem != 0 && m_page->m_previewItem->paint(painter, topLeft, m_rect))
+    {
+        // blurry preview until the tile is rendered
+
+        return false;
+    }
     else
     {
         const qreal iconExtent = qMin(0.1 * m_rect.width(), 0.1 * m_rect.height());
@@ -292,6 +298,169 @@ QPixmap TileItem::takePixmap()
     }
 
     return pixmap;
+}
+
+namespace
+{
+
+// Longest side of the preview in device-independent pixels; small enough to render quickly.
+const qreal previewExtent = 700.0;
+
+// Memory shared by all page previews.
+const qint64 previewBudget = 128 * 1024 * 1024;
+
+inline qint64 pixmapBytes(const QPixmap& pixmap)
+{
+    return qint64(pixmap.width()) * pixmap.height() * qMax(pixmap.depth(), 8) / 8;
+}
+
+} // anonymous
+
+QList< PreviewItem* > PreviewItem::s_recentlyUsed;
+qint64 PreviewItem::s_totalBytes = 0;
+
+PreviewItem::PreviewItem(PageItem* page) : RenderTaskParent(),
+    m_page(page),
+    m_pixmap(),
+    m_pixmapParam(),
+    m_stale(false),
+    m_renderTask(page->m_page, this)
+{
+}
+
+PreviewItem::~PreviewItem()
+{
+    m_renderTask.cancel(true);
+    m_renderTask.wait();
+
+    forget();
+}
+
+RenderParam PreviewItem::previewParam() const
+{
+    RenderParam renderParam = m_page->m_renderParam;
+
+    const QSizeF size = m_page->displayedSize(renderParam);
+    const qreal extent = qMax(size.width(), size.height());
+
+    if(extent > previewExtent)
+    {
+        renderParam.setScaleFactor(renderParam.scaleFactor() * previewExtent / extent);
+    }
+
+    return renderParam;
+}
+
+bool PreviewItem::isUsable() const
+{
+    if(m_pixmap.isNull())
+    {
+        return false;
+    }
+
+    // The preview can be scaled to any zoom level, but not across rotations or colour changes.
+    RenderParam renderParam = m_page->m_renderParam;
+    renderParam.setScaleFactor(m_pixmapParam.scaleFactor());
+    renderParam.setResolution(m_pixmapParam.resolutionX(), m_pixmapParam.resolutionY());
+    renderParam.setDevicePixelRatio(m_pixmapParam.devicePixelRatio());
+
+    return renderParam == m_pixmapParam;
+}
+
+void PreviewItem::prepare()
+{
+    if(m_renderTask.isRunning() || (isUsable() && !m_stale))
+    {
+        return;
+    }
+
+    m_stale = false;
+
+    // Higher priority than visible tiles so the preview arrives first.
+    m_renderTask.start(previewParam(), QRect(), false, 3);
+}
+
+bool PreviewItem::paint(QPainter* painter, QPointF topLeft, const QRectF& tileRect)
+{
+    prepare();
+
+    if(!isUsable())
+    {
+        return false;
+    }
+
+    const QRectF& pageRect = m_page->m_boundingRect;
+
+    if(pageRect.isEmpty())
+    {
+        return false;
+    }
+
+    const qreal scaleX = m_pixmap.width() / pageRect.width();
+    const qreal scaleY = m_pixmap.height() / pageRect.height();
+
+    const QRectF sourceRect(tileRect.left() * scaleX, tileRect.top() * scaleY, tileRect.width() * scaleX, tileRect.height() * scaleY);
+
+    painter->save();
+    painter->setRenderHint(QPainter::SmoothPixmapTransform);
+    painter->drawPixmap(tileRect.translated(topLeft), m_pixmap, sourceRect);
+    painter->restore();
+
+    touch();
+
+    return true;
+}
+
+void PreviewItem::on_finished(const RenderParam& renderParam,
+                              const QRect&, bool,
+                              const QImage& image, const QRectF&)
+{
+    if(!image.isNull() && !m_renderTask.wasCanceled())
+    {
+        forget();
+
+        m_pixmap = QPixmap::fromImage(image);
+        m_pixmapParam = renderParam;
+
+        s_totalBytes += pixmapBytes(m_pixmap);
+        touch();
+
+        enforceBudget(this);
+    }
+
+    m_page->update();
+}
+
+void PreviewItem::on_canceled()
+{
+}
+
+void PreviewItem::touch()
+{
+    if(s_recentlyUsed.isEmpty() || s_recentlyUsed.last() != this)
+    {
+        s_recentlyUsed.removeAll(this);
+        s_recentlyUsed.append(this);
+    }
+}
+
+void PreviewItem::forget()
+{
+    if(!m_pixmap.isNull())
+    {
+        s_totalBytes -= pixmapBytes(m_pixmap);
+        m_pixmap = QPixmap();
+    }
+
+    s_recentlyUsed.removeAll(this);
+}
+
+void PreviewItem::enforceBudget(PreviewItem* keep)
+{
+    while(s_totalBytes > previewBudget && !s_recentlyUsed.isEmpty() && s_recentlyUsed.first() != keep)
+    {
+        s_recentlyUsed.first()->forget();
+    }
 }
 
 } // qpdfview
