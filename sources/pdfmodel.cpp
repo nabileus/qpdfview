@@ -26,6 +26,7 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <memory>
 
 #include <QCache>
+#include <QDateTime>
 #include <QFormLayout>
 #include <QMessageBox>
 #include <QSettings>
@@ -776,7 +777,8 @@ QList< Annotation* > PdfPage::annotations() const
 
 #endif // QT_VERSION
 
-        if(annotation->subType() == Poppler::Annotation::AText || annotation->subType() == Poppler::Annotation::AHighlight || annotation->subType() == Poppler::Annotation::AFileAttachment)
+        if(annotation->subType() == Poppler::Annotation::AText || annotation->subType() == Poppler::Annotation::AHighlight || annotation->subType() == Poppler::Annotation::AFileAttachment
+                || annotation->subType() == Poppler::Annotation::AInk || annotation->subType() == Poppler::Annotation::ALine || annotation->subType() == Poppler::Annotation::AGeom)
         {
             annotations.append(new PdfAnnotation(m_mutex, annotation.release()));
         }
@@ -871,6 +873,167 @@ Annotation* PdfPage::addHighlightAnnotation(const QRectF& boundary, const QColor
 
 #endif // HAS_POPPLER_20
 
+}
+
+#ifdef HAS_POPPLER_20
+
+namespace
+{
+
+Poppler::Annotation::Style drawingStyle(const QColor& color, qreal width, qreal opacity = 1.0)
+{
+    Poppler::Annotation::Style style;
+    style.setColor(color);
+    style.setWidth(width);
+    style.setOpacity(opacity);
+
+    return style;
+}
+
+void finishDrawingAnnotation(Poppler::Annotation* annotation, const QRectF& boundary, const Poppler::Annotation::Style& style)
+{
+    Poppler::Annotation::Popup popup;
+    popup.setFlags(Poppler::Annotation::Hidden | Poppler::Annotation::ToggleHidingOnMouse);
+
+    const QDateTime now = QDateTime::currentDateTime();
+
+    annotation->setBoundary(boundary.normalized());
+    annotation->setStyle(style);
+    annotation->setPopup(popup);
+    annotation->setAuthor(QString::fromLocal8Bit(qgetenv("USER")));
+    annotation->setCreationDate(now);
+    annotation->setModificationDate(now);
+}
+
+QRectF paddedBoundary(const QRectF& rect, qreal width, const QSizeF& pageSize)
+{
+    const qreal padX = pageSize.width() > 0.0 ? width / pageSize.width() : 0.0;
+    const qreal padY = pageSize.height() > 0.0 ? width / pageSize.height() : 0.0;
+
+    return rect.normalized().adjusted(-padX, -padY, padX, padY);
+}
+
+} // anonymous
+
+#endif // HAS_POPPLER_20
+
+Annotation* PdfPage::addInkAnnotation(const QList< QVector< QPointF > >& paths, const QColor& color, qreal width, qreal opacity)
+{
+    LOCK_PAGE
+
+#if defined(HAS_POPPLER_20) && QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+
+    QRectF bounds;
+
+    foreach(const QVector< QPointF >& path, paths)
+    {
+        foreach(const QPointF& point, path)
+        {
+            bounds = bounds.isNull() ? QRectF(point, QSizeF(1e-6, 1e-6)) : bounds.united(QRectF(point, QSizeF(1e-6, 1e-6)));
+        }
+    }
+
+    Poppler::InkAnnotation* annotation = new Poppler::InkAnnotation();
+    annotation->setInkPaths(paths);
+
+    finishDrawingAnnotation(annotation, paddedBoundary(bounds, width, m_page->pageSizeF()), drawingStyle(color, width, opacity));
+
+    m_page->addAnnotation(annotation);
+
+    return new PdfAnnotation(m_mutex, annotation);
+
+#else
+
+    Q_UNUSED(paths); Q_UNUSED(color); Q_UNUSED(width); Q_UNUSED(opacity);
+
+    return 0;
+
+#endif
+}
+
+Annotation* PdfPage::addLineAnnotation(const QPointF& start, const QPointF& end, bool arrow, const QColor& color, qreal width)
+{
+    LOCK_PAGE
+
+#if defined(HAS_POPPLER_20) && QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+
+    Poppler::LineAnnotation* annotation = new Poppler::LineAnnotation(Poppler::LineAnnotation::StraightLine);
+    annotation->setLinePoints(QVector< QPointF >() << start << end);
+
+    if(arrow)
+    {
+        annotation->setLineEndStyle(Poppler::LineAnnotation::OpenArrow);
+    }
+
+    // Leave room for the arrow head.
+    finishDrawingAnnotation(annotation, paddedBoundary(QRectF(start, end), arrow ? 4.0 * width + 6.0 : width, m_page->pageSizeF()), drawingStyle(color, width));
+
+    m_page->addAnnotation(annotation);
+
+    return new PdfAnnotation(m_mutex, annotation);
+
+#else
+
+    Q_UNUSED(start); Q_UNUSED(end); Q_UNUSED(arrow); Q_UNUSED(color); Q_UNUSED(width);
+
+    return 0;
+
+#endif
+}
+
+Annotation* PdfPage::addShapeAnnotation(const QRectF& boundary, bool ellipse, const QColor& color, qreal width)
+{
+    LOCK_PAGE
+
+#ifdef HAS_POPPLER_20
+
+    Poppler::GeomAnnotation* annotation = new Poppler::GeomAnnotation();
+    annotation->setGeomType(ellipse ? Poppler::GeomAnnotation::InscribedCircle : Poppler::GeomAnnotation::InscribedSquare);
+
+    finishDrawingAnnotation(annotation, boundary, drawingStyle(color, width));
+
+    m_page->addAnnotation(annotation);
+
+    return new PdfAnnotation(m_mutex, annotation);
+
+#else
+
+    Q_UNUSED(boundary); Q_UNUSED(ellipse); Q_UNUSED(color); Q_UNUSED(width);
+
+    return 0;
+
+#endif // HAS_POPPLER_20
+}
+
+Annotation* PdfPage::addFreeTextAnnotation(const QRectF& boundary, const QString& text, const QColor& color, qreal fontSize)
+{
+    LOCK_PAGE
+
+#ifdef HAS_POPPLER_20
+
+    Poppler::TextAnnotation* annotation = new Poppler::TextAnnotation(Poppler::TextAnnotation::InPlace);
+
+    QFont font(QLatin1String("Helvetica"));
+    font.setPointSizeF(fontSize);
+
+    annotation->setTextFont(font);
+    annotation->setTextColor(color);
+    annotation->setContents(text);
+
+    // Transparent background and no border.
+    finishDrawingAnnotation(annotation, boundary, drawingStyle(QColor(Qt::transparent), 0.0));
+
+    m_page->addAnnotation(annotation);
+
+    return new PdfAnnotation(m_mutex, annotation);
+
+#else
+
+    Q_UNUSED(boundary); Q_UNUSED(text); Q_UNUSED(color); Q_UNUSED(fontSize);
+
+    return 0;
+
+#endif // HAS_POPPLER_20
 }
 
 void PdfPage::removeAnnotation(Annotation* annotation)

@@ -99,6 +99,15 @@ public:
         QColor annotationColor() const;
         void setAnnotationColor(const QColor& annotationColor);
 
+        QColor drawColor() const;
+        void setDrawColor(const QColor& drawColor);
+
+        qreal drawWidth() const;
+        void setDrawWidth(qreal drawWidth);
+
+        qreal drawFontSize() const;
+        void setDrawFontSize(qreal drawFontSize);
+
         Qt::KeyboardModifiers copyToClipboardModifiers() const;
         void setCopyToClipboardModifiers(Qt::KeyboardModifiers modifiers);
 
@@ -533,6 +542,10 @@ public:
 
         static QColor highlightColor() { return Qt::yellow; }
         static QColor annotationColor() { return Qt::yellow; }
+
+        static QColor drawColor() { return Qt::red; }
+        static qreal drawWidth() { return 2.0; }
+        static qreal drawFontSize() { return 14.0; }
 
         static Qt::KeyboardModifiers copyToClipboardModifiers() { return Qt::ShiftModifier; }
         static Qt::KeyboardModifiers addAnnotationModifiers() { return Qt::ControlModifier; }

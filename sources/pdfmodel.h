@@ -124,6 +124,11 @@ namespace Model
         bool canAddAndRemoveAnnotations() const;
         Annotation* addTextAnnotation(const QRectF& boundary, const QColor& color);
         Annotation* addHighlightAnnotation(const QRectF& boundary, const QColor& color);
+
+        Annotation* addInkAnnotation(const QList< QVector< QPointF > >& paths, const QColor& color, qreal width, qreal opacity);
+        Annotation* addLineAnnotation(const QPointF& start, const QPointF& end, bool arrow, const QColor& color, qreal width);
+        Annotation* addShapeAnnotation(const QRectF& boundary, bool ellipse, const QColor& color, qreal width);
+        Annotation* addFreeTextAnnotation(const QRectF& boundary, const QString& text, const QColor& color, qreal fontSize);
         void removeAnnotation(Annotation* annotation);
 
         QList< FormField* > formFields() const;

@@ -139,6 +139,12 @@ namespace Model
         virtual bool canAddAndRemoveAnnotations() const { return false; }
         virtual Annotation* addTextAnnotation(const QRectF& boundary, const QColor& color) { Q_UNUSED(boundary); Q_UNUSED(color); return 0; }
         virtual Annotation* addHighlightAnnotation(const QRectF& boundary, const QColor& color) { Q_UNUSED(boundary); Q_UNUSED(color); return 0; }
+
+        // Drawing annotations; all coordinates are normalized to [0,1] of the unrotated page, widths and font sizes are in points.
+        virtual Annotation* addInkAnnotation(const QList< QVector< QPointF > >& paths, const QColor& color, qreal width, qreal opacity) { Q_UNUSED(paths); Q_UNUSED(color); Q_UNUSED(width); Q_UNUSED(opacity); return 0; }
+        virtual Annotation* addLineAnnotation(const QPointF& start, const QPointF& end, bool arrow, const QColor& color, qreal width) { Q_UNUSED(start); Q_UNUSED(end); Q_UNUSED(arrow); Q_UNUSED(color); Q_UNUSED(width); return 0; }
+        virtual Annotation* addShapeAnnotation(const QRectF& boundary, bool ellipse, const QColor& color, qreal width) { Q_UNUSED(boundary); Q_UNUSED(ellipse); Q_UNUSED(color); Q_UNUSED(width); return 0; }
+        virtual Annotation* addFreeTextAnnotation(const QRectF& boundary, const QString& text, const QColor& color, qreal fontSize) { Q_UNUSED(boundary); Q_UNUSED(text); Q_UNUSED(color); Q_UNUSED(fontSize); return 0; }
         virtual void removeAnnotation(Annotation* annotation) { Q_UNUSED(annotation); }
 
         virtual QList< FormField* > formFields() const { return QList< FormField* >(); }

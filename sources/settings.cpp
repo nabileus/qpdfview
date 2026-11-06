@@ -214,6 +214,36 @@ void Settings::PageItem::setAnnotationColor(const QColor& annotationColor)
     m_settings->setValue("pageItem/annotationColor", annotationColor);
 }
 
+QColor Settings::PageItem::drawColor() const
+{
+    return m_settings->value("pageItem/drawColor", Defaults::PageItem::drawColor()).value< QColor >();
+}
+
+void Settings::PageItem::setDrawColor(const QColor& drawColor)
+{
+    m_settings->setValue("pageItem/drawColor", drawColor);
+}
+
+qreal Settings::PageItem::drawWidth() const
+{
+    return m_settings->value("pageItem/drawWidth", Defaults::PageItem::drawWidth()).toReal();
+}
+
+void Settings::PageItem::setDrawWidth(qreal drawWidth)
+{
+    m_settings->setValue("pageItem/drawWidth", drawWidth);
+}
+
+qreal Settings::PageItem::drawFontSize() const
+{
+    return m_settings->value("pageItem/drawFontSize", Defaults::PageItem::drawFontSize()).toReal();
+}
+
+void Settings::PageItem::setDrawFontSize(qreal drawFontSize)
+{
+    m_settings->setValue("pageItem/drawFontSize", drawFontSize);
+}
+
 Qt::KeyboardModifiers Settings::PageItem::copyToClipboardModifiers() const
 {
     return static_cast< Qt::KeyboardModifiers >(m_settings->value("pageItem/copyToClipboardModifiers", static_cast< int >(Defaults::PageItem::copyToClipboardModifiers())).toInt());

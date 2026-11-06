@@ -30,6 +30,8 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QGraphicsProxyWidget>
 #include <QGraphicsScene>
 #include <QGraphicsSceneHoverEvent>
+#include <QGraphicsView>
+#include <QInputDialog>
 #include <qmath.h>
 #include <QMenu>
 #include <QMessageBox>
@@ -99,6 +101,8 @@ PageItem::PageItem(Model::Page* page, int index, PaintMode paintMode, QGraphicsI
     m_formFields(),
     m_rubberBandMode(ModifiersMode),
     m_rubberBand(),
+    m_drawing(false),
+    m_drawPoints(),
     m_annotationOverlay(),
     m_formFieldOverlay(),
     m_renderParam(RenderParam::defaultInstance),
@@ -175,6 +179,7 @@ void PageItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, 
 
     paintHighlights(painter);
     paintRubberBand(painter);
+    paintDrawing(painter);
 }
 
 QSizeF PageItem::displayedSize(const RenderParam& renderParam) const
@@ -214,6 +219,14 @@ void PageItem::setRubberBandMode(RubberBandMode rubberBandMode)
     if(m_rubberBandMode != rubberBandMode && rubberBandMode >= 0 && rubberBandMode < NumberOfRubberBandModes)
     {
         m_rubberBandMode = rubberBandMode;
+
+        if(m_drawing)
+        {
+            m_drawing = false;
+            m_drawPoints.clear();
+
+            update();
+        }
 
         if(m_rubberBandMode == ModifiersMode)
         {
@@ -466,6 +479,29 @@ void PageItem::mousePressEvent(QGraphicsSceneMouseEvent* event)
     const bool rubberBandModifiersActive = copyToClipboardModifiersActive || addAnnotationModifiersActive || zoomToSelectionModifiersActive;
     const bool openInSourceEditorModifiersActive = modifiersAreActive(event, s_settings->pageItem().openInSourceEditorModifiers());
 
+    // drawing tools
+
+    if(isDrawingMode(m_rubberBandMode))
+    {
+        if(leftButtonActive && !presentationMode())
+        {
+            if(m_rubberBandMode == EraseAnnotationMode)
+            {
+                eraseAnnotationAt(event->pos());
+            }
+            else
+            {
+                startDrawing(event->pos());
+            }
+
+            event->accept();
+            return;
+        }
+
+        event->ignore();
+        return;
+    }
+
     // rubber band
 
     if(rubberBandModifiersActive && leftButtonActive && !presentationMode())
@@ -586,6 +622,14 @@ void PageItem::mousePressEvent(QGraphicsSceneMouseEvent* event)
 
 void PageItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
 {
+    if(m_drawing)
+    {
+        continueDrawing(event->pos());
+
+        event->accept();
+        return;
+    }
+
     if(!m_rubberBand.isNull())
     {
         const QPointF pos = event->pos();
@@ -612,6 +656,15 @@ void PageItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
 
 void PageItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
 {
+    if(m_drawing && event->button() == Qt::LeftButton)
+    {
+        continueDrawing(event->pos());
+        finishDrawing();
+
+        event->accept();
+        return;
+    }
+
     if(!m_rubberBand.isNull())
     {
         unsetCursor();
@@ -904,6 +957,223 @@ void PageItem::addAnnotation(QPoint screenPos)
             {
                 showAnnotationOverlay(annotation);
             }
+        }
+    }
+}
+
+qreal PageItem::drawScale() const
+{
+    // Item units per PDF point at the current zoom level.
+    return QLineF(m_transform.map(QPointF(0.0, 0.0)), m_transform.map(QPointF(1.0, 0.0))).length();
+}
+
+void PageItem::startDrawing(const QPointF& pos)
+{
+    if(!m_page->canAddAndRemoveAnnotations())
+    {
+        return;
+    }
+
+    hideAnnotationOverlay();
+
+    const QRectF pageRect = boundingRect();
+    const QPointF point(qBound(pageRect.left(), pos.x(), pageRect.right()), qBound(pageRect.top(), pos.y(), pageRect.bottom()));
+
+    m_drawing = true;
+    m_drawPoints.clear();
+    m_drawPoints.append(point);
+    m_drawPoints.append(point);
+
+    update();
+}
+
+void PageItem::continueDrawing(const QPointF& pos)
+{
+    const QRectF pageRect = boundingRect();
+    const QPointF point(qBound(pageRect.left(), pos.x(), pageRect.right()), qBound(pageRect.top(), pos.y(), pageRect.bottom()));
+
+    if(m_rubberBandMode == DrawPenMode || m_rubberBandMode == DrawHighlighterMode)
+    {
+        // Skip points closer than about one screen pixel to keep paths small.
+        if(QLineF(m_drawPoints.last(), point).length() >= 1.0)
+        {
+            m_drawPoints.append(point);
+        }
+    }
+    else
+    {
+        m_drawPoints.last() = point;
+    }
+
+    update();
+}
+
+void PageItem::finishDrawing()
+{
+    m_drawing = false;
+
+    const QVector< QPointF > points = m_drawPoints;
+    m_drawPoints.clear();
+
+    update();
+
+    if(points.count() < 2)
+    {
+        return;
+    }
+
+    const QTransform toNormalized = m_normalizedTransform.inverted();
+
+    const QColor color = s_settings->pageItem().drawColor();
+    const qreal width = s_settings->pageItem().drawWidth();
+
+    const QRectF dragRect = QRectF(points.first(), points.last()).normalized();
+    const bool isClick = dragRect.width() < 3.0 && dragRect.height() < 3.0;
+
+    Model::Annotation* annotation = 0;
+
+    switch(m_rubberBandMode)
+    {
+    case DrawPenMode:
+    case DrawHighlighterMode:
+    {
+        QVector< QPointF > path;
+
+        foreach(const QPointF& point, points)
+        {
+            path.append(toNormalized.map(point));
+        }
+
+        if(path.count() == 2 && path.first() == path.last())
+        {
+            // A single click draws a dot.
+            path.last() += QPointF(0.5 / m_size.width(), 0.5 / m_size.height());
+        }
+
+        if(m_rubberBandMode == DrawPenMode)
+        {
+            annotation = m_page->addInkAnnotation(QList< QVector< QPointF > >() << path, color, width, 1.0);
+        }
+        else
+        {
+            annotation = m_page->addInkAnnotation(QList< QVector< QPointF > >() << path, color, qMax(6.0, 6.0 * width), 0.4);
+        }
+
+        break;
+    }
+    case DrawLineMode:
+    case DrawArrowMode:
+        if(!isClick)
+        {
+            annotation = m_page->addLineAnnotation(toNormalized.map(points.first()), toNormalized.map(points.last()), m_rubberBandMode == DrawArrowMode, color, width);
+        }
+        break;
+    case DrawRectangleMode:
+    case DrawEllipseMode:
+        if(!isClick)
+        {
+            annotation = m_page->addShapeAnnotation(toNormalized.mapRect(dragRect), m_rubberBandMode == DrawEllipseMode, color, width);
+        }
+        break;
+    case DrawTextMode:
+    {
+        QWidget* parent = scene() != 0 && !scene()->views().isEmpty() ? scene()->views().first() : 0;
+
+        bool ok = false;
+        const QString text = QInputDialog::getMultiLineText(parent, tr("Add text"), tr("Text:"), QString(), &ok);
+
+        if(!ok || text.trimmed().isEmpty())
+        {
+            return;
+        }
+
+        const qreal fontSize = s_settings->pageItem().drawFontSize();
+
+        QFont font(QLatin1String("Helvetica"));
+        font.setPointSizeF(fontSize);
+
+        const QFontMetricsF metrics(font);
+        const QStringList lines = text.split(QLatin1Char('\n'));
+
+        qreal textWidth = 0.0;
+
+        foreach(const QString& line, lines)
+        {
+            textWidth = qMax(textWidth, metrics.horizontalAdvance(line));
+        }
+
+        // Box size in PDF points, padded a little; anchored at the top-left of the click or drag.
+        const qreal boxWidth = qMax(textWidth * 1.15 + 8.0, isClick ? 0.0 : dragRect.width() / drawScale());
+        const qreal lineHeight = metrics.lineSpacing() * 1.05;
+
+        const QPointF anchor = toNormalized.map(dragRect.topLeft());
+
+        // Poppler embeds a font subset covering only the first line of a multi-line
+        // free text annotation when saving, so each line becomes its own annotation.
+        for(int index = 0; index < lines.count(); ++index)
+        {
+            if(lines.at(index).trimmed().isEmpty())
+            {
+                continue;
+            }
+
+            const QRectF boundary(anchor.x(), anchor.y() + index * lineHeight / m_size.height(),
+                                  boxWidth / m_size.width(), (lineHeight + 8.0) / m_size.height());
+
+            Model::Annotation* lineAnnotation = m_page->addFreeTextAnnotation(boundary, lines.at(index), color, fontSize);
+
+            if(lineAnnotation != 0)
+            {
+                appendNewAnnotation(lineAnnotation);
+            }
+        }
+
+        break;
+    }
+    default:
+        break;
+    }
+
+    if(annotation != 0)
+    {
+        appendNewAnnotation(annotation);
+    }
+}
+
+void PageItem::appendNewAnnotation(Model::Annotation* annotation)
+{
+    m_annotations.append(annotation);
+    connect(annotation, SIGNAL(wasModified()), SIGNAL(wasModified()));
+
+    refresh(false, true);
+    emit wasModified();
+}
+
+void PageItem::eraseAnnotationAt(const QPointF& pos)
+{
+    if(!m_page->canAddAndRemoveAnnotations())
+    {
+        return;
+    }
+
+    // Remove the top-most annotation under the cursor.
+    for(int index = m_annotations.count() - 1; index >= 0; --index)
+    {
+        Model::Annotation* annotation = m_annotations.at(index);
+
+        if(m_normalizedTransform.mapRect(annotation->boundary()).contains(pos))
+        {
+            hideAnnotationOverlay(false);
+
+            m_annotations.removeAt(index);
+            m_page->removeAnnotation(annotation);
+
+            annotation->deleteLater();
+
+            refresh(false, true);
+            emit wasModified();
+
+            return;
         }
     }
 }
@@ -1363,6 +1633,60 @@ inline void PageItem::paintRubberBand(QPainter* painter) const
 
         painter->restore();
     }
+}
+
+inline void PageItem::paintDrawing(QPainter* painter) const
+{
+    if(!m_drawing || m_drawPoints.count() < 2)
+    {
+        return;
+    }
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+
+    QColor color = s_settings->pageItem().drawColor();
+    qreal width = s_settings->pageItem().drawWidth();
+
+    if(m_rubberBandMode == DrawHighlighterMode)
+    {
+        color.setAlphaF(0.4);
+        width = qMax(6.0, 6.0 * width);
+    }
+
+    QPen pen(color, width * drawScale(), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+
+    const QRectF dragRect = QRectF(m_drawPoints.first(), m_drawPoints.last()).normalized();
+
+    switch(m_rubberBandMode)
+    {
+    case DrawPenMode:
+    case DrawHighlighterMode:
+        painter->setPen(pen);
+        painter->drawPolyline(m_drawPoints.constData(), m_drawPoints.count());
+        break;
+    case DrawLineMode:
+    case DrawArrowMode:
+        painter->setPen(pen);
+        painter->drawLine(m_drawPoints.first(), m_drawPoints.last());
+        break;
+    case DrawRectangleMode:
+        painter->setPen(pen);
+        painter->drawRect(dragRect);
+        break;
+    case DrawEllipseMode:
+        painter->setPen(pen);
+        painter->drawEllipse(dragRect);
+        break;
+    case DrawTextMode:
+        painter->setPen(QPen(color, 0.0, Qt::DashLine));
+        painter->drawRect(dragRect);
+        break;
+    default:
+        break;
+    }
+
+    painter->restore();
 }
 
 } // qpdfview

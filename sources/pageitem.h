@@ -176,6 +176,16 @@ private:
     RubberBandMode m_rubberBandMode;
     QRectF m_rubberBand;
 
+    bool m_drawing;
+    QVector< QPointF > m_drawPoints;
+
+    void startDrawing(const QPointF& pos);
+    void continueDrawing(const QPointF& pos);
+    void finishDrawing();
+    void eraseAnnotationAt(const QPointF& pos);
+    void appendNewAnnotation(Model::Annotation* annotation);
+    qreal drawScale() const;
+
     void copyToClipboard(QPoint screenPos);
     void addAnnotation(QPoint screenPos);
 
@@ -222,6 +232,7 @@ private:
 
     void paintHighlights(QPainter* painter) const;
     void paintRubberBand(QPainter* painter) const;
+    void paintDrawing(QPainter* painter) const;
 
 };
 

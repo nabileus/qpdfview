@@ -33,10 +33,14 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QColorDialog>
 #include <QDateTime>
 #include <QDebug>
 #include <QDesktopServices>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
+#include <QLabel>
+#include <QPainter>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QFileDialog>
@@ -409,6 +413,7 @@ QMenu* MainWindow::createPopupMenu()
     menu->addAction(m_fileToolBar->toggleViewAction());
     menu->addAction(m_editToolBar->toggleViewAction());
     menu->addAction(m_viewToolBar->toggleViewAction());
+    menu->addAction(m_annotateToolBar->toggleViewAction());
     menu->addSeparator();
     menu->addAction(m_outlineDock->toggleViewAction());
     menu->addAction(m_propertiesDock->toggleViewAction());
@@ -612,6 +617,11 @@ void MainWindow::on_tabWidget_currentChanged()
     m_copyToClipboardModeAction->setEnabled(hasCurrent);
     m_addAnnotationModeAction->setEnabled(hasCurrent);
 
+    foreach(QAction* action, m_drawModeActions)
+    {
+        action->setEnabled(hasCurrent);
+    }
+
     m_continuousModeAction->setEnabled(hasCurrent);
     m_twoPagesModeAction->setEnabled(hasCurrent);
     m_twoPagesWithCoverPageModeAction->setEnabled(hasCurrent);
@@ -749,6 +759,11 @@ void MainWindow::on_tabWidget_currentChanged()
 
         m_copyToClipboardModeAction->setChecked(false);
         m_addAnnotationModeAction->setChecked(false);
+
+        foreach(QAction* action, m_drawModeActions)
+        {
+            action->setChecked(false);
+        }
 
         m_continuousModeAction->setChecked(false);
         m_twoPagesModeAction->setChecked(false);
@@ -1152,6 +1167,11 @@ void MainWindow::on_currentTab_rubberBandModeChanged(RubberBandMode rubberBandMo
 
     m_copyToClipboardModeAction->setChecked(rubberBandMode == CopyToClipboardMode);
     m_addAnnotationModeAction->setChecked(rubberBandMode == AddAnnotationMode);
+
+    foreach(QAction* action, m_drawModeActions)
+    {
+        action->setChecked(action->data().toInt() == static_cast< int >(rubberBandMode));
+    }
 }
 
 void MainWindow::on_currentTab_searchFinished()
@@ -1700,6 +1720,71 @@ void MainWindow::on_addAnnotationMode_triggered(bool checked)
     currentTab()->setRubberBandMode(checked ? AddAnnotationMode : ModifiersMode);
 }
 
+void MainWindow::on_drawMode_triggered(bool checked)
+{
+    QAction* const action = qobject_cast< QAction* >(sender());
+
+    if(action == 0 || currentTab() == 0)
+    {
+        return;
+    }
+
+    currentTab()->setRubberBandMode(checked ? static_cast< RubberBandMode >(action->data().toInt()) : ModifiersMode);
+}
+
+void MainWindow::on_drawColor_triggered()
+{
+    const QColor color = QColorDialog::getColor(s_settings->pageItem().drawColor(), this, tr("Drawing color"));
+
+    if(color.isValid())
+    {
+        s_settings->pageItem().setDrawColor(color);
+
+        updateDrawColorIcon();
+    }
+}
+
+void MainWindow::on_drawWidth_valueChanged(double value)
+{
+    s_settings->pageItem().setDrawWidth(value);
+}
+
+void MainWindow::on_drawFontSize_valueChanged(double value)
+{
+    s_settings->pageItem().setDrawFontSize(value);
+}
+
+QAction* MainWindow::createDrawModeAction(const QString& text, const QString& objectName, const QString& iconName, RubberBandMode mode)
+{
+    QAction* const action = createAction(text, objectName, iconName, QKeySequence(), SLOT(on_drawMode_triggered(bool)), true);
+    action->setData(static_cast< int >(mode));
+
+    // Show the name when the icon theme lacks the icon.
+    if(action->icon().isNull())
+    {
+        action->setIconText(text);
+    }
+
+    m_drawModeActions.append(action);
+
+    return action;
+}
+
+void MainWindow::updateDrawColorIcon()
+{
+    QPixmap pixmap(32, 32);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(palette().color(QPalette::WindowText), 2.0));
+    painter.setBrush(s_settings->pageItem().drawColor());
+    painter.drawRoundedRect(QRectF(4.0, 4.0, 24.0, 24.0), 4.0, 4.0);
+    painter.end();
+
+    m_drawColorAction->setIcon(QIcon(pixmap));
+}
+
 void MainWindow::on_settings_triggered()
 {
     QScopedPointer< SettingsDialog > settingsDialog(new SettingsDialog(this));
@@ -2207,6 +2292,7 @@ void MainWindow::on_toggleToolBars_triggered(bool checked)
         m_fileToolBar->setVisible(m_fileToolBarWasVisible);
         m_editToolBar->setVisible(m_editToolBarWasVisible);
         m_viewToolBar->setVisible(m_viewToolBarWasVisible);
+        m_annotateToolBar->setVisible(m_annotateToolBarWasVisible);
     }
     else
     {
@@ -2215,12 +2301,14 @@ void MainWindow::on_toggleToolBars_triggered(bool checked)
         m_fileToolBarWasVisible = m_fileToolBar->isVisible();
         m_editToolBarWasVisible = m_editToolBar->isVisible();
         m_viewToolBarWasVisible = m_viewToolBar->isVisible();
+        m_annotateToolBarWasVisible = m_annotateToolBar->isVisible();
 
         m_tabWidget->setTabBarPolicy(TabWidget::TabBarAlwaysOff);
 
         m_fileToolBar->setVisible(false);
         m_editToolBar->setVisible(false);
         m_viewToolBar->setVisible(false);
+        m_annotateToolBar->setVisible(false);
     }
 }
 
@@ -3245,6 +3333,18 @@ void MainWindow::createActions()
     m_copyToClipboardModeAction = createAction(tr("&Copy to clipboard"), QLatin1String("copyToClipboardMode"), QLatin1String("edit-copy"), QKeySequence(Qt::CTRL | Qt::Key_C), SLOT(on_copyToClipboardMode_triggered(bool)), true);
     m_addAnnotationModeAction = createAction(tr("&Add annotation"), QLatin1String("addAnnotationMode"), QLatin1String("mail-attachment"), QKeySequence(Qt::CTRL | Qt::Key_A), SLOT(on_addAnnotationMode_triggered(bool)), true);
 
+    createDrawModeAction(tr("&Pen"), QLatin1String("drawPenMode"), QLatin1String("draw-freehand"), DrawPenMode);
+    createDrawModeAction(tr("&Highlighter"), QLatin1String("drawHighlighterMode"), QLatin1String("draw-highlight"), DrawHighlighterMode);
+    createDrawModeAction(tr("&Line"), QLatin1String("drawLineMode"), QLatin1String("draw-line"), DrawLineMode);
+    createDrawModeAction(tr("A&rrow"), QLatin1String("drawArrowMode"), QLatin1String("draw-arrow"), DrawArrowMode);
+    createDrawModeAction(tr("Rec&tangle"), QLatin1String("drawRectangleMode"), QLatin1String("draw-rectangle"), DrawRectangleMode);
+    createDrawModeAction(tr("&Ellipse"), QLatin1String("drawEllipseMode"), QLatin1String("draw-ellipse"), DrawEllipseMode);
+    createDrawModeAction(tr("Te&xt box"), QLatin1String("drawTextMode"), QLatin1String("draw-text"), DrawTextMode);
+    createDrawModeAction(tr("Erase&r"), QLatin1String("eraseAnnotationMode"), QLatin1String("draw-eraser"), EraseAnnotationMode);
+
+    m_drawColorAction = createAction(tr("Drawing &color..."), QLatin1String("drawColor"), QIcon(), QKeySequence(), SLOT(on_drawColor_triggered()));
+    updateDrawColorIcon();
+
     m_settingsAction = createAction(tr("Settings..."), QString(), QIcon(), QKeySequence(), SLOT(on_settings_triggered()));
     m_settingsAction->setMenuRole(QAction::PreferencesRole);
 
@@ -3358,6 +3458,36 @@ void MainWindow::createToolBars()
 
     m_viewToolBar = createToolBar(tr("&View"), QLatin1String("viewToolBar"), s_settings->mainWindow().viewToolBar(),
                                   QList< QAction* >() << m_scaleFactorAction << m_continuousModeAction << m_twoPagesModeAction << m_twoPagesWithCoverPageModeAction << m_multiplePagesModeAction << m_rightToLeftModeAction << m_zoomInAction << m_zoomOutAction << m_originalSizeAction << m_fitToPageWidthModeAction << m_fitToPageSizeModeAction << m_rotateLeftAction << m_rotateRightAction << m_fullscreenAction << m_presentationAction);
+
+    m_annotateToolBar = addToolBar(tr("&Annotate"));
+    m_annotateToolBar->setObjectName(QLatin1String("annotateToolBar"));
+    m_annotateToolBar->addActions(m_drawModeActions);
+    m_annotateToolBar->addSeparator();
+    m_annotateToolBar->addAction(m_drawColorAction);
+
+    m_drawWidthSpinBox = new QDoubleSpinBox(this);
+    m_drawWidthSpinBox->setRange(0.5, 20.0);
+    m_drawWidthSpinBox->setSingleStep(0.5);
+    m_drawWidthSpinBox->setDecimals(1);
+    m_drawWidthSpinBox->setSuffix(tr(" pt"));
+    m_drawWidthSpinBox->setToolTip(tr("Line width"));
+    m_drawWidthSpinBox->setValue(s_settings->pageItem().drawWidth());
+    connect(m_drawWidthSpinBox, SIGNAL(valueChanged(double)), SLOT(on_drawWidth_valueChanged(double)));
+
+    m_drawFontSizeSpinBox = new QDoubleSpinBox(this);
+    m_drawFontSizeSpinBox->setRange(4.0, 96.0);
+    m_drawFontSizeSpinBox->setSingleStep(1.0);
+    m_drawFontSizeSpinBox->setDecimals(0);
+    m_drawFontSizeSpinBox->setPrefix(tr("Aa "));
+    m_drawFontSizeSpinBox->setToolTip(tr("Text box font size"));
+    m_drawFontSizeSpinBox->setValue(s_settings->pageItem().drawFontSize());
+    connect(m_drawFontSizeSpinBox, SIGNAL(valueChanged(double)), SLOT(on_drawFontSize_valueChanged(double)));
+
+    m_annotateToolBar->addWidget(m_drawWidthSpinBox);
+    m_annotateToolBar->addWidget(m_drawFontSizeSpinBox);
+
+    m_annotateToolBar->toggleViewAction()->setObjectName(QLatin1String("annotateToolBarToggleView"));
+    s_shortcutHandler->registerAction(m_annotateToolBar->toggleViewAction());
 
     m_focusCurrentPageShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_K), this, SLOT(on_focusCurrentPage_activated()));
     m_focusScaleFactorShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_L), this, SLOT(on_focusScaleFactor_activated()));
@@ -3573,6 +3703,11 @@ void MainWindow::createMenus()
     m_editMenu->addActions(QList< QAction* >() << m_searchAction << m_findPreviousAction << m_findNextAction << m_cancelSearchAction);
     m_editMenu->addSeparator();
     m_editMenu->addActions(QList< QAction* >() << m_copyToClipboardModeAction << m_addAnnotationModeAction);
+
+    QMenu* drawMenu = m_editMenu->addMenu(tr("&Draw"));
+    drawMenu->addActions(m_drawModeActions);
+    drawMenu->addSeparator();
+    drawMenu->addAction(m_drawColorAction);
     m_editMenu->addSeparator();
     m_editMenu->addAction(m_settingsAction);
 
@@ -3596,7 +3731,7 @@ void MainWindow::createMenus()
     m_viewMenu->addSeparator();
 
     QMenu* toolBarsMenu = m_viewMenu->addMenu(tr("&Tool bars"));
-    toolBarsMenu->addActions(QList< QAction* >() << m_fileToolBar->toggleViewAction() << m_editToolBar->toggleViewAction() << m_viewToolBar->toggleViewAction());
+    toolBarsMenu->addActions(QList< QAction* >() << m_fileToolBar->toggleViewAction() << m_editToolBar->toggleViewAction() << m_viewToolBar->toggleViewAction() << m_annotateToolBar->toggleViewAction());
 
     QMenu* docksMenu = m_viewMenu->addMenu(tr("&Docks"));
     docksMenu->addActions(QList< QAction* >() << m_outlineDock->toggleViewAction() << m_propertiesDock->toggleViewAction() << m_thumbnailsDock->toggleViewAction() << m_bookmarksDock->toggleViewAction());

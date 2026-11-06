@@ -44,8 +44,21 @@ enum RubberBandMode
     CopyToClipboardMode = 1,
     AddAnnotationMode = 2,
     ZoomToSelectionMode = 3,
-    NumberOfRubberBandModes = 4
+    DrawPenMode = 4,
+    DrawHighlighterMode = 5,
+    DrawLineMode = 6,
+    DrawArrowMode = 7,
+    DrawRectangleMode = 8,
+    DrawEllipseMode = 9,
+    DrawTextMode = 10,
+    EraseAnnotationMode = 11,
+    NumberOfRubberBandModes = 12
 };
+
+inline bool isDrawingMode(RubberBandMode mode)
+{
+    return mode >= DrawPenMode && mode <= EraseAnnotationMode;
+}
 
 enum LayoutMode
 {

@@ -40,6 +40,7 @@ class QDBusInterface;
 #endif // WITH_DBUS
 
 class QCheckBox;
+class QDoubleSpinBox;
 class QDateTime;
 class QGraphicsView;
 class QFileInfo;
@@ -189,6 +190,11 @@ protected slots:
 
     void on_copyToClipboardMode_triggered(bool checked);
     void on_addAnnotationMode_triggered(bool checked);
+
+    void on_drawMode_triggered(bool checked);
+    void on_drawColor_triggered();
+    void on_drawWidth_valueChanged(double value);
+    void on_drawFontSize_valueChanged(double value);
 
     void on_settings_triggered();
 
@@ -393,6 +399,14 @@ private:
     QAction* m_copyToClipboardModeAction;
     QAction* m_addAnnotationModeAction;
 
+    QList< QAction* > m_drawModeActions;
+    QAction* m_drawColorAction;
+    QDoubleSpinBox* m_drawWidthSpinBox;
+    QDoubleSpinBox* m_drawFontSizeSpinBox;
+
+    QAction* createDrawModeAction(const QString& text, const QString& objectName, const QString& iconName, RubberBandMode mode);
+    void updateDrawColorIcon();
+
     QAction* m_settingsAction;
 
     QAction* m_continuousModeAction;
@@ -463,6 +477,7 @@ private:
     QToolBar* m_fileToolBar;
     QToolBar* m_editToolBar;
     QToolBar* m_viewToolBar;
+    QToolBar* m_annotateToolBar;
 
     QShortcut* m_focusCurrentPageShortcut;
     QShortcut* m_focusScaleFactorShortcut;
@@ -512,6 +527,7 @@ private:
     bool m_fileToolBarWasVisible;
     bool m_editToolBarWasVisible;
     bool m_viewToolBarWasVisible;
+    bool m_annotateToolBarWasVisible;
 
     QAction* m_toggleToolBarsAction;
     QAction* m_toggleMenuBarAction;
