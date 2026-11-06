@@ -280,6 +280,9 @@ protected slots:
 
 protected:
     bool event(QEvent* event);
+    bool viewportEvent(QEvent* event);
+    bool nativeGestureEvent(QEvent* event);
+    void zoomBy(qreal factor, const QPoint& anchor);
 
     void resizeEvent(QResizeEvent* event);
 
@@ -339,6 +342,7 @@ private:
     bool m_rightToLeftMode;
     ScaleMode m_scaleMode;
     qreal m_scaleFactor;
+    qreal m_pinchFactor;
     Rotation m_rotation;
 
     qpdfview::RenderFlags m_renderFlags;

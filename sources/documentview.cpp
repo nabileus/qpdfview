@@ -36,6 +36,7 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QFileSystemWatcher>
 #include <QGesture>
 #include <QKeyEvent>
+#include <QNativeGestureEvent>
 #include <qmath.h>
 #include <QMenu>
 #include <QMessageBox>
@@ -758,6 +759,7 @@ DocumentView::DocumentView(QWidget* parent) : QGraphicsView(parent),
     m_continuousMode(false),
     m_scaleMode(ScaleFactorMode),
     m_scaleFactor(1.0),
+    m_pinchFactor(1.0),
     m_rotation(RotateBy0),
     m_renderFlags(),
     m_highlightAll(false),
@@ -2157,7 +2159,102 @@ bool DocumentView::event(QEvent* event)
         return true;
     }
 
+    if (nativeGestureEvent(event))
+    {
+        return true;
+    }
+
     return QGraphicsView::event(event);
+}
+
+bool DocumentView::viewportEvent(QEvent* event)
+{
+    if (nativeGestureEvent(event))
+    {
+        return true;
+    }
+
+    return QGraphicsView::viewportEvent(event);
+}
+
+// Touchpad pinch-to-zoom (delivered as native gestures, e.g. on Wayland and macOS).
+bool DocumentView::nativeGestureEvent(QEvent* event)
+{
+    if (event->type() != QEvent::NativeGesture)
+    {
+        return false;
+    }
+
+    QNativeGestureEvent* const gestureEvent = static_cast< QNativeGestureEvent* >(event);
+
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+    const QPoint anchor = viewport()->mapFromGlobal(gestureEvent->globalPosition().toPoint());
+#else
+    const QPoint anchor = viewport()->mapFromGlobal(gestureEvent->globalPos());
+#endif // QT_VERSION
+
+    switch (gestureEvent->gestureType())
+    {
+    case Qt::BeginNativeGesture:
+        m_pinchFactor = 1.0;
+        break;
+    case Qt::ZoomNativeGesture:
+        m_pinchFactor *= 1.0 + gestureEvent->value();
+
+        // Re-layouting is expensive, so only apply noticeable changes.
+        if (qAbs(m_pinchFactor - 1.0) >= 0.03)
+        {
+            zoomBy(m_pinchFactor, anchor);
+            m_pinchFactor = 1.0;
+        }
+        break;
+    case Qt::EndNativeGesture:
+        if (!qFuzzyCompare(m_pinchFactor, 1.0))
+        {
+            zoomBy(m_pinchFactor, anchor);
+        }
+        m_pinchFactor = 1.0;
+        break;
+    default:
+        return false;
+    }
+
+    event->accept();
+    return true;
+}
+
+void DocumentView::zoomBy(qreal factor, const QPoint& anchor)
+{
+    if (m_pageItems.isEmpty() || factor <= 0.0)
+    {
+        return;
+    }
+
+    const qreal currentScaleFactor = scaleMode() != ScaleFactorMode
+            ? m_pageItems.at(m_currentPage - 1)->renderParam().scaleFactor()
+            : m_scaleFactor;
+
+    const qreal newScaleFactor = qBound(s_settings->documentView().minimumScaleFactor(),
+                                        currentScaleFactor * factor,
+                                        s_settings->documentView().maximumScaleFactor());
+
+    // Remember which part of the document is under the fingers...
+    const QRectF oldSceneRect = sceneRect();
+    const QPointF oldScenePos = mapToScene(anchor);
+    const qreal relativeX = oldSceneRect.width() > 0.0 ? (oldScenePos.x() - oldSceneRect.left()) / oldSceneRect.width() : 0.0;
+    const qreal relativeY = oldSceneRect.height() > 0.0 ? (oldScenePos.y() - oldSceneRect.top()) / oldSceneRect.height() : 0.0;
+
+    setScaleFactor(newScaleFactor);
+    setScaleMode(ScaleFactorMode);
+
+    // ...and keep it there after zooming.
+    const QRectF newSceneRect = sceneRect();
+    const QPointF newScenePos(newSceneRect.left() + relativeX * newSceneRect.width(),
+                              newSceneRect.top() + relativeY * newSceneRect.height());
+    const QPoint delta = mapFromScene(newScenePos) - anchor;
+
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() + delta.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() + delta.y());
 }
 
 void DocumentView::resizeEvent(QResizeEvent* event)
