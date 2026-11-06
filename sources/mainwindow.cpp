@@ -56,6 +56,8 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUndoGroup>
+#include <QUndoStack>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWidgetAction>
@@ -598,6 +600,8 @@ void MainWindow::on_tabWidget_currentChanged()
 
     DocumentView* const tab = currentTab();
     const bool hasCurrent = tab != 0;
+
+    m_undoGroup->setActiveStack(hasCurrent ? tab->undoStack() : 0);
 
     m_refreshAction->setEnabled(hasCurrent);
     m_printAction->setEnabled(hasCurrent);
@@ -1712,6 +1716,13 @@ void MainWindow::on_cancelSearch_triggered()
 
 void MainWindow::on_copyToClipboardMode_triggered(bool checked)
 {
+    // With selected text, the shortcut (Ctrl+C) copies it instead of entering the copy mode.
+    if(checked && currentTab()->copySelectedText())
+    {
+        m_copyToClipboardModeAction->setChecked(false);
+        return;
+    }
+
     currentTab()->setRubberBandMode(checked ? CopyToClipboardMode : ModifiersMode);
 }
 
@@ -2881,6 +2892,8 @@ void MainWindow::connectTab(DocumentView* tab)
     connect(tab, SIGNAL(highlightAllChanged(bool)), SLOT(on_currentTab_highlightAllChanged(bool)));
     connect(tab, SIGNAL(rubberBandModeChanged(RubberBandMode)), SLOT(on_currentTab_rubberBandModeChanged(RubberBandMode)));
 
+    m_undoGroup->addStack(tab->undoStack());
+
     connect(tab, SIGNAL(searchFinished()), SLOT(on_currentTab_searchFinished()));
     connect(tab, SIGNAL(searchProgressChanged(int)), SLOT(on_currentTab_searchProgressChanged(int)));
 
@@ -3333,6 +3346,22 @@ void MainWindow::createActions()
     m_copyToClipboardModeAction = createAction(tr("&Copy to clipboard"), QLatin1String("copyToClipboardMode"), QLatin1String("edit-copy"), QKeySequence(Qt::CTRL | Qt::Key_C), SLOT(on_copyToClipboardMode_triggered(bool)), true);
     m_addAnnotationModeAction = createAction(tr("&Add annotation"), QLatin1String("addAnnotationMode"), QLatin1String("mail-attachment"), QKeySequence(Qt::CTRL | Qt::Key_A), SLOT(on_addAnnotationMode_triggered(bool)), true);
 
+    m_undoGroup = new QUndoGroup(this);
+
+    m_undoAction = m_undoGroup->createUndoAction(this, tr("Undo"));
+    m_undoAction->setObjectName(QLatin1String("undo"));
+    m_undoAction->setIcon(loadIconWithFallback(QLatin1String("edit-undo")));
+    m_undoAction->setShortcuts(QList< QKeySequence >() << QKeySequence(QKeySequence::Undo));
+    s_shortcutHandler->registerAction(m_undoAction);
+    addAction(m_undoAction);
+
+    m_redoAction = m_undoGroup->createRedoAction(this, tr("Redo"));
+    m_redoAction->setObjectName(QLatin1String("redo"));
+    m_redoAction->setIcon(loadIconWithFallback(QLatin1String("edit-redo")));
+    m_redoAction->setShortcuts(QList< QKeySequence >() << QKeySequence(QKeySequence::Redo) << QKeySequence(Qt::CTRL | Qt::Key_Y));
+    s_shortcutHandler->registerAction(m_redoAction);
+    addAction(m_redoAction);
+
     createDrawModeAction(tr("&Pen"), QLatin1String("drawPenMode"), QLatin1String("draw-freehand"), DrawPenMode);
     createDrawModeAction(tr("&Highlighter"), QLatin1String("drawHighlighterMode"), QLatin1String("draw-highlight"), DrawHighlighterMode);
     createDrawModeAction(tr("&Line"), QLatin1String("drawLineMode"), QLatin1String("draw-line"), DrawLineMode);
@@ -3461,6 +3490,9 @@ void MainWindow::createToolBars()
 
     m_annotateToolBar = addToolBar(tr("&Annotate"));
     m_annotateToolBar->setObjectName(QLatin1String("annotateToolBar"));
+    m_annotateToolBar->addAction(m_undoAction);
+    m_annotateToolBar->addAction(m_redoAction);
+    m_annotateToolBar->addSeparator();
     m_annotateToolBar->addActions(m_drawModeActions);
     m_annotateToolBar->addSeparator();
     m_annotateToolBar->addAction(m_drawColorAction);
@@ -3696,6 +3728,8 @@ void MainWindow::createMenus()
     // edit
 
     m_editMenu = menuBar()->addMenu(tr("&Edit"));
+    m_editMenu->addActions(QList< QAction* >() << m_undoAction << m_redoAction);
+    m_editMenu->addSeparator();
     m_editMenu->addActions(QList< QAction* >() << m_previousPageAction << m_nextPageAction << m_firstPageAction << m_lastPageAction << m_jumpToPageAction);
     m_editMenu->addSeparator();
     m_editMenu->addActions(QList< QAction* >() << m_jumpBackwardAction << m_jumpForwardAction);

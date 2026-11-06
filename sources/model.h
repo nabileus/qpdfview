@@ -28,6 +28,8 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QtPlugin>
 #include <QWidget>
 #include <QVector>
+#include <QVariant>
+#include <QRectF>
 
 class QAbstractItemModel;
 class QColor;
@@ -79,6 +81,24 @@ namespace Model
     };
 
     typedef QVector< QPair< QString, QString > > Properties;
+
+    // One word of the page text layout; all rectangles are normalized to [0,1] of the unrotated page.
+    struct TextWord
+    {
+        QString text;
+        QRectF boundary;
+        QVector< QRectF > charBoundaries;
+        bool spaceAfter;
+
+        TextWord() : spaceAfter(false) {}
+    };
+
+    enum TextMarkupType
+    {
+        HighlightMarkup = 0,
+        UnderlineMarkup = 1,
+        StrikeOutMarkup = 2
+    };
 
     class Annotation : public QObject
     {
@@ -146,6 +166,14 @@ namespace Model
         virtual Annotation* addShapeAnnotation(const QRectF& boundary, bool ellipse, const QColor& color, qreal width) { Q_UNUSED(boundary); Q_UNUSED(ellipse); Q_UNUSED(color); Q_UNUSED(width); return 0; }
         virtual Annotation* addFreeTextAnnotation(const QRectF& boundary, const QString& text, const QColor& color, qreal fontSize) { Q_UNUSED(boundary); Q_UNUSED(text); Q_UNUSED(color); Q_UNUSED(fontSize); return 0; }
         virtual void removeAnnotation(Annotation* annotation) { Q_UNUSED(annotation); }
+
+        virtual Annotation* addTextMarkupAnnotation(const QList< QRectF >& boundaries, TextMarkupType type, const QColor& color) { Q_UNUSED(boundaries); Q_UNUSED(type); Q_UNUSED(color); return 0; }
+
+        // Undo support: capture everything needed to re-create an annotation, and re-create it.
+        virtual QVariant annotationState(Annotation* annotation) const { Q_UNUSED(annotation); return QVariant(); }
+        virtual Annotation* restoreAnnotation(const QVariant& state) { Q_UNUSED(state); return 0; }
+
+        virtual QList< TextWord > textWords() const { return QList< TextWord >(); }
 
         virtual QList< FormField* > formFields() const { return QList< FormField* >(); }
 

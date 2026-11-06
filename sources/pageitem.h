@@ -27,11 +27,15 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QFutureWatcher>
 #include <QGraphicsObject>
 #include <QIcon>
+#include <QPointer>
+#include <QUndoStack>
 #include <QSet>
 
 class QGraphicsProxyWidget;
 
 #include "renderparam.h"
+#include "model.h"
+
 
 namespace qpdfview
 {
@@ -95,6 +99,20 @@ public:
     QPointF sourcePos(QPointF point) const { return m_transform.inverted().map(point); }
     QPointF normalizedSourcePos(QPointF point) const { return m_normalizedTransform.inverted().map(point); }
 
+    // undo support
+
+    void setUndoStack(QUndoStack* undoStack) { m_undoStack = undoStack; }
+
+    // Annotations are tracked by stable ids, since undo and redo re-create them as new objects.
+    void restoreAnnotations(const QList< int >& ids, const QList< QVariant >& states);
+    void removeAnnotations(const QList< int >& ids);
+
+    // text selection
+
+    bool hasTextSelection() const { return m_selectionStart < m_selectionEnd; }
+    QString selectedText() const;
+    void clearTextSelection();
+
 signals:
     void cropRectChanged();
 
@@ -134,6 +152,7 @@ protected:
     void mousePressEvent(QGraphicsSceneMouseEvent* event);
     void mouseMoveEvent(QGraphicsSceneMouseEvent* event);
     void mouseReleaseEvent(QGraphicsSceneMouseEvent* event);
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event);
 
     void contextMenuEvent(QGraphicsSceneContextMenuEvent* event);
 
@@ -184,7 +203,45 @@ private:
     void finishDrawing();
     void eraseAnnotationAt(const QPointF& pos);
     void appendNewAnnotation(Model::Annotation* annotation);
+    void commitNewAnnotations(const QList< Model::Annotation* >& annotations, const QString& undoText);
+    void removeAnnotationsWithUndo(const QList< Model::Annotation* >& annotations, const QString& undoText);
     qreal drawScale() const;
+
+    QPointer< QUndoStack > m_undoStack;
+
+    QHash< int, QPointer< Model::Annotation > > m_annotationIds;
+    static int s_nextAnnotationId;
+
+    int annotationId(Model::Annotation* annotation);
+
+    bool handleElementClick(const QPointF& pos);
+
+    // text selection
+
+    QList< Model::TextWord > m_textWords;
+    QList< Model::TextWord > m_loadedTextWords;
+    QVector< int > m_wordFirstChar;
+    int m_charCount;
+
+    int m_selectionAnchor;
+    int m_selectionStart;
+    int m_selectionEnd;
+    bool m_selectingText;
+    bool m_selectionMoved;
+    bool m_selectionForHighlight;
+    QPointF m_selectionPressPos;
+
+    static PageItem* s_textSelectionOwner;
+
+    void beginTextSelection(const QPointF& pos, bool forHighlight);
+    bool isNearText(const QPointF& pos) const;
+    int wordAt(const QPointF& pos) const;
+    int caretAt(const QPointF& pos) const;
+    QList< QRectF > selectionRects() const;
+    bool selectionContains(const QPointF& pos) const;
+    void finishTextSelection();
+    void showTextSelectionContextMenu(QPoint screenPos);
+    void markSelection(Model::TextMarkupType type);
 
     void copyToClipboard(QPoint screenPos);
     void addAnnotation(QPoint screenPos);
@@ -233,6 +290,7 @@ private:
     void paintHighlights(QPainter* painter) const;
     void paintRubberBand(QPainter* painter) const;
     void paintDrawing(QPainter* painter) const;
+    void paintTextSelection(QPainter* painter) const;
 
 };
 

@@ -41,6 +41,7 @@ class QDBusInterface;
 
 class QCheckBox;
 class QDoubleSpinBox;
+class QUndoGroup;
 class QDateTime;
 class QGraphicsView;
 class QFileInfo;
@@ -398,6 +399,10 @@ private:
 
     QAction* m_copyToClipboardModeAction;
     QAction* m_addAnnotationModeAction;
+
+    QUndoGroup* m_undoGroup;
+    QAction* m_undoAction;
+    QAction* m_redoAction;
 
     QList< QAction* > m_drawModeActions;
     QAction* m_drawColorAction;

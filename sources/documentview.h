@@ -36,6 +36,7 @@ class QFileSystemWatcher;
 class QGestureEvent;
 class QPrinter;
 class QStandardItemModel;
+class QUndoStack;
 
 #include "renderparam.h"
 #include "printoptions.h"
@@ -131,6 +132,11 @@ public:
 
     RubberBandMode rubberBandMode() const { return m_rubberBandMode; }
     void setRubberBandMode(RubberBandMode rubberBandMode);
+
+    QUndoStack* undoStack() const { return m_undoStack; }
+
+    // Copies the selected text to the clipboard; returns false if no text is selected.
+    bool copySelectedText();
 
     QSize thumbnailsViewportSize() const { return m_thumbnailsViewportSize; }
     void setThumbnailsViewportSize(QSize thumbnailsViewportSize);
@@ -349,6 +355,7 @@ private:
 
     bool m_highlightAll;
     RubberBandMode m_rubberBandMode;
+    QUndoStack* m_undoStack;
 
     QVector< PageItem* > m_pageItems;
     QVector< ThumbnailItem* > m_thumbnailItems;

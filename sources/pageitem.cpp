@@ -38,6 +38,7 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QPainter>
 #include <QStyleOptionGraphicsItem>
 #include <QTimer>
+#include <QUndoStack>
 #include <QToolTip>
 #include <QUrl>
 
@@ -86,7 +87,92 @@ inline void showToolTip(Settings* settings, const QGraphicsSceneHoverEvent* even
 
 } // anonymous
 
+namespace
+{
+
+class AnnotationCommand : public QUndoCommand
+{
+public:
+    AnnotationCommand(PageItem* page, const QList< int >& ids, const QList< QVariant >& states, bool addition, const QString& text) : QUndoCommand(text),
+        m_page(page),
+        m_ids(ids),
+        m_states(states),
+        m_addition(addition),
+        m_firstRedo(true)
+    {
+    }
+
+    void undo()
+    {
+        if(m_page.isNull())
+        {
+            return;
+        }
+
+        if(m_addition)
+        {
+            m_page->removeAnnotations(m_ids);
+        }
+        else
+        {
+            m_page->restoreAnnotations(m_ids, m_states);
+        }
+    }
+
+    void redo()
+    {
+        // The action itself was already performed when the command was pushed.
+        if(m_firstRedo)
+        {
+            m_firstRedo = false;
+            return;
+        }
+
+        if(m_page.isNull())
+        {
+            return;
+        }
+
+        if(m_addition)
+        {
+            m_page->restoreAnnotations(m_ids, m_states);
+        }
+        else
+        {
+            m_page->removeAnnotations(m_ids);
+        }
+    }
+
+private:
+    QPointer< PageItem > m_page;
+    QList< int > m_ids;
+    QList< QVariant > m_states;
+    bool m_addition;
+    bool m_firstRedo;
+
+};
+
+inline bool onSameLine(const QRectF& first, const QRectF& second)
+{
+    const qreal overlap = qMin(first.bottom(), second.bottom()) - qMax(first.top(), second.top());
+
+    return overlap > 0.5 * qMin(first.height(), second.height());
+}
+
+inline qreal distanceToRect(const QRectF& rect, const QPointF& point)
+{
+    const qreal dx = qMax(qMax(rect.left() - point.x(), 0.0), point.x() - rect.right());
+    const qreal dy = qMax(qMax(rect.top() - point.y(), 0.0), point.y() - rect.bottom());
+
+    // Prefer words on the same line as the cursor.
+    return dx + 4.0 * dy;
+}
+
+} // anonymous
+
 Settings* PageItem::s_settings = 0;
+PageItem* PageItem::s_textSelectionOwner = 0;
+int PageItem::s_nextAnnotationId = 1;
 
 PageItem::PageItem(Model::Page* page, int index, PaintMode paintMode, QGraphicsItem* parent) : QGraphicsObject(parent),
     m_page(page),
@@ -103,6 +189,19 @@ PageItem::PageItem(Model::Page* page, int index, PaintMode paintMode, QGraphicsI
     m_rubberBand(),
     m_drawing(false),
     m_drawPoints(),
+    m_undoStack(),
+    m_annotationIds(),
+    m_textWords(),
+    m_loadedTextWords(),
+    m_wordFirstChar(),
+    m_charCount(0),
+    m_selectionAnchor(-1),
+    m_selectionStart(0),
+    m_selectionEnd(0),
+    m_selectingText(false),
+    m_selectionMoved(false),
+    m_selectionForHighlight(false),
+    m_selectionPressPos(),
     m_annotationOverlay(),
     m_formFieldOverlay(),
     m_renderParam(RenderParam::defaultInstance),
@@ -144,6 +243,11 @@ PageItem::~PageItem()
     hideAnnotationOverlay(false);
     hideFormFieldOverlay(false);
 
+    if(s_textSelectionOwner == this)
+    {
+        s_textSelectionOwner = 0;
+    }
+
     TileItem::dropCachedPixmaps(this);
 
     qDeleteAll(m_links);
@@ -178,6 +282,7 @@ void PageItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, 
     paintFormFields(painter);
 
     paintHighlights(painter);
+    paintTextSelection(painter);
     paintRubberBand(painter);
     paintDrawing(painter);
 }
@@ -390,6 +495,13 @@ void PageItem::hoverEnterEvent(QGraphicsSceneHoverEvent*)
 
 void PageItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event)
 {
+    if(m_rubberBandMode == DrawHighlighterMode)
+    {
+        // The highlighter marks text when used on text.
+        setCursor(isNearText(event->pos()) ? Qt::IBeamCursor : Qt::CrossCursor);
+        return;
+    }
+
     if(m_rubberBandMode == ModifiersMode && event->modifiers() == Qt::NoModifier)
     {
         // links
@@ -431,19 +543,6 @@ void PageItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event)
             return;
         }
 
-        // annotations
-
-        foreach(const Model::Annotation* annotation, m_annotations)
-        {
-            if(m_normalizedTransform.mapRect(annotation->boundary()).contains(event->pos()))
-            {
-                setCursor(Qt::PointingHandCursor);
-                showToolTip(s_settings, event, annotation->contents());
-
-                return;
-            }
-        }
-
         // form fields
 
         foreach(const Model::FormField* formField, m_formFields)
@@ -452,6 +551,40 @@ void PageItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event)
             {
                 setCursor(Qt::PointingHandCursor);
                 showToolTip(s_settings, event, tr("Edit form field '%1'.").arg(formField->name()));
+
+                return;
+            }
+        }
+
+        // text
+
+        if(isNearText(event->pos()))
+        {
+            setCursor(Qt::IBeamCursor);
+
+            foreach(const Model::Annotation* annotation, m_annotations)
+            {
+                if(m_normalizedTransform.mapRect(annotation->boundary()).contains(event->pos()) && !annotation->contents().isEmpty())
+                {
+                    showToolTip(s_settings, event, annotation->contents());
+
+                    return;
+                }
+            }
+
+            QToolTip::hideText();
+
+            return;
+        }
+
+        // annotations
+
+        foreach(const Model::Annotation* annotation, m_annotations)
+        {
+            if(m_normalizedTransform.mapRect(annotation->boundary()).contains(event->pos()))
+            {
+                setCursor(Qt::PointingHandCursor);
+                showToolTip(s_settings, event, annotation->contents());
 
                 return;
             }
@@ -582,46 +715,95 @@ void PageItem::mousePressEvent(QGraphicsSceneMouseEvent* event)
 
     if(noModifiersActive && leftButtonActive && !presentationMode())
     {
-        // annotations
+        // text selection; a plain click (without dragging) falls through to annotations and form fields on release
 
-        foreach(Model::Annotation* annotation, m_annotations)
+        bool onFormField = false;
+
+        foreach(const Model::FormField* formField, m_formFields)
         {
-            if(m_normalizedTransform.mapRect(annotation->boundary()).contains(event->pos()))
-            {
-                unsetCursor();
-
-                showAnnotationOverlay(annotation);
-
-                event->accept();
-                return;
-            }
+            onFormField = onFormField || m_normalizedTransform.mapRect(formField->boundary()).contains(event->pos());
         }
 
-        hideAnnotationOverlay();
-
-        // form fields
-
-        foreach(Model::FormField* formField, m_formFields)
+        if(!onFormField && isNearText(event->pos()))
         {
-            if(m_normalizedTransform.mapRect(formField->boundary()).contains(event->pos()))
-            {
-                unsetCursor();
+            beginTextSelection(event->pos(), false);
 
-                showFormFieldOverlay(formField);
-
-                event->accept();
-                return;
-            }
+            event->accept();
+            return;
         }
 
-        hideFormFieldOverlay();
+        clearTextSelection();
+
+        if(handleElementClick(event->pos()))
+        {
+            event->accept();
+            return;
+        }
     }
 
     event->ignore();
 }
 
+bool PageItem::handleElementClick(const QPointF& pos)
+{
+    // annotations
+
+    foreach(Model::Annotation* annotation, m_annotations)
+    {
+        if(m_normalizedTransform.mapRect(annotation->boundary()).contains(pos))
+        {
+            unsetCursor();
+
+            showAnnotationOverlay(annotation);
+
+            return true;
+        }
+    }
+
+    hideAnnotationOverlay();
+
+    // form fields
+
+    foreach(Model::FormField* formField, m_formFields)
+    {
+        if(m_normalizedTransform.mapRect(formField->boundary()).contains(pos))
+        {
+            unsetCursor();
+
+            showFormFieldOverlay(formField);
+
+            return true;
+        }
+    }
+
+    hideFormFieldOverlay();
+
+    return false;
+}
+
 void PageItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
 {
+    if(m_selectingText)
+    {
+        if(!m_selectionMoved && QLineF(m_selectionPressPos, event->pos()).length() < 3.0)
+        {
+            event->accept();
+            return;
+        }
+
+        m_selectionMoved = true;
+
+        const int caret = caretAt(event->pos());
+
+        m_selectionStart = qMin(m_selectionAnchor, caret);
+        m_selectionEnd = qMax(m_selectionAnchor, caret);
+
+        update();
+
+        event->accept();
+        return;
+    }
+
     if(m_drawing)
     {
         continueDrawing(event->pos());
@@ -656,6 +838,28 @@ void PageItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event)
 
 void PageItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
 {
+    if(m_selectingText && event->button() == Qt::LeftButton)
+    {
+        m_selectingText = false;
+
+        if(!m_selectionMoved)
+        {
+            clearTextSelection();
+
+            if(!m_selectionForHighlight)
+            {
+                handleElementClick(event->pos());
+            }
+        }
+        else
+        {
+            finishTextSelection();
+        }
+
+        event->accept();
+        return;
+    }
+
     if(m_drawing && event->button() == Qt::LeftButton)
     {
         continueDrawing(event->pos());
@@ -698,6 +902,35 @@ void PageItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event)
     event->ignore();
 }
 
+void PageItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event)
+{
+    if(m_rubberBandMode == ModifiersMode && event->button() == Qt::LeftButton && event->modifiers() == Qt::NoModifier && !presentationMode())
+    {
+        const int word = wordAt(event->pos());
+
+        if(word >= 0)
+        {
+            if(s_textSelectionOwner != 0 && s_textSelectionOwner != this)
+            {
+                s_textSelectionOwner->clearTextSelection();
+            }
+
+            s_textSelectionOwner = this;
+
+            m_selectionStart = m_wordFirstChar.at(word);
+            m_selectionEnd = m_selectionStart + m_textWords.at(word).text.length();
+            m_selectionForHighlight = false;
+
+            finishTextSelection();
+
+            event->accept();
+            return;
+        }
+    }
+
+    QGraphicsObject::mouseDoubleClickEvent(event);
+}
+
 void PageItem::contextMenuEvent(QGraphicsSceneContextMenuEvent* event)
 {
     if(event->reason() == QGraphicsSceneContextMenuEvent::Mouse && modifiersUseMouseButton(s_settings, Qt::RightButton))
@@ -709,6 +942,14 @@ void PageItem::contextMenuEvent(QGraphicsSceneContextMenuEvent* event)
     if(presentationMode())
     {
         event->ignore();
+        return;
+    }
+
+    if(selectionContains(event->pos()))
+    {
+        showTextSelectionContextMenu(event->screenPos());
+
+        event->accept();
         return;
     }
 
@@ -743,6 +984,22 @@ void PageItem::contextMenuEvent(QGraphicsSceneContextMenuEvent* event)
 
 void PageItem::on_loadInteractiveElements_finished()
 {
+    clearTextSelection();
+
+    m_textWords = m_loadedTextWords;
+    m_loadedTextWords.clear();
+
+    m_wordFirstChar.clear();
+    m_wordFirstChar.reserve(m_textWords.count());
+
+    m_charCount = 0;
+
+    foreach(const Model::TextWord& word, m_textWords)
+    {
+        m_wordFirstChar.append(m_charCount);
+        m_charCount += word.text.length();
+    }
+
     update();
 }
 
@@ -853,6 +1110,9 @@ void PageItem::loadInteractiveElements()
     }
 
     m_formFields = formFields;
+
+    // Handed over to the GUI thread in on_loadInteractiveElements_finished.
+    m_loadedTextWords = m_page->textWords();
 }
 
 void PageItem::copyToClipboard(QPoint screenPos)
@@ -947,11 +1207,13 @@ void PageItem::addAnnotation(QPoint screenPos)
                 annotation = m_page->addHighlightAnnotation(boundary, s_settings->pageItem().annotationColor());
             }
 
-            m_annotations.append(annotation);
-            connect(annotation, SIGNAL(wasModified()), SIGNAL(wasModified()));
+            if(annotation == 0)
+            {
+                return;
+            }
 
-            refresh(false, true);
-            emit wasModified();
+            appendNewAnnotation(annotation);
+            commitNewAnnotations(QList< Model::Annotation* >() << annotation, tr("Add annotation"));
 
             if(action == addTextAction)
             {
@@ -975,6 +1237,12 @@ void PageItem::startDrawing(const QPointF& pos)
     }
 
     hideAnnotationOverlay();
+
+    if(m_rubberBandMode == DrawHighlighterMode && isNearText(pos))
+    {
+        beginTextSelection(pos, true);
+        return;
+    }
 
     const QRectF pageRect = boundingRect();
     const QPointF point(qBound(pageRect.left(), pos.x(), pageRect.right()), qBound(pageRect.top(), pos.y(), pageRect.bottom()));
@@ -1031,6 +1299,7 @@ void PageItem::finishDrawing()
     const bool isClick = dragRect.width() < 3.0 && dragRect.height() < 3.0;
 
     Model::Annotation* annotation = 0;
+    QList< Model::Annotation* > textAnnotations;
 
     switch(m_rubberBandMode)
     {
@@ -1125,6 +1394,7 @@ void PageItem::finishDrawing()
             if(lineAnnotation != 0)
             {
                 appendNewAnnotation(lineAnnotation);
+                textAnnotations.append(lineAnnotation);
             }
         }
 
@@ -1137,6 +1407,11 @@ void PageItem::finishDrawing()
     if(annotation != 0)
     {
         appendNewAnnotation(annotation);
+        commitNewAnnotations(QList< Model::Annotation* >() << annotation, tr("Draw"));
+    }
+    else if(!textAnnotations.isEmpty())
+    {
+        commitNewAnnotations(textAnnotations, tr("Add text"));
     }
 }
 
@@ -1144,6 +1419,115 @@ void PageItem::appendNewAnnotation(Model::Annotation* annotation)
 {
     m_annotations.append(annotation);
     connect(annotation, SIGNAL(wasModified()), SIGNAL(wasModified()));
+}
+
+int PageItem::annotationId(Model::Annotation* annotation)
+{
+    for(QHash< int, QPointer< Model::Annotation > >::const_iterator iterator = m_annotationIds.constBegin(); iterator != m_annotationIds.constEnd(); ++iterator)
+    {
+        if(iterator.value().data() == annotation)
+        {
+            return iterator.key();
+        }
+    }
+
+    const int id = s_nextAnnotationId++;
+    m_annotationIds.insert(id, annotation);
+
+    return id;
+}
+
+void PageItem::commitNewAnnotations(const QList< Model::Annotation* >& annotations, const QString& undoText)
+{
+    if(!m_undoStack.isNull())
+    {
+        QList< int > ids;
+        QList< QVariant > states;
+
+        foreach(Model::Annotation* annotation, annotations)
+        {
+            const QVariant state = m_page->annotationState(annotation);
+
+            if(state.isValid())
+            {
+                ids.append(annotationId(annotation));
+                states.append(state);
+            }
+        }
+
+        if(!ids.isEmpty())
+        {
+            m_undoStack->push(new AnnotationCommand(this, ids, states, true, undoText));
+        }
+    }
+
+    refresh(false, true);
+    emit wasModified();
+}
+
+void PageItem::removeAnnotationsWithUndo(const QList< Model::Annotation* >& annotations, const QString& undoText)
+{
+    QList< int > ids;
+    QList< int > restorableIds;
+    QList< QVariant > states;
+
+    foreach(Model::Annotation* annotation, annotations)
+    {
+        const int id = annotationId(annotation);
+        const QVariant state = m_page->annotationState(annotation);
+
+        ids.append(id);
+
+        if(state.isValid())
+        {
+            restorableIds.append(id);
+            states.append(state);
+        }
+    }
+
+    removeAnnotations(ids);
+
+    if(!m_undoStack.isNull() && !restorableIds.isEmpty())
+    {
+        m_undoStack->push(new AnnotationCommand(this, restorableIds, states, false, undoText));
+    }
+}
+
+void PageItem::restoreAnnotations(const QList< int >& ids, const QList< QVariant >& states)
+{
+    for(int index = 0; index < ids.count() && index < states.count(); ++index)
+    {
+        Model::Annotation* const annotation = m_page->restoreAnnotation(states.at(index));
+
+        if(annotation != 0)
+        {
+            appendNewAnnotation(annotation);
+            m_annotationIds.insert(ids.at(index), annotation);
+        }
+    }
+
+    refresh(false, true);
+    emit wasModified();
+}
+
+void PageItem::removeAnnotations(const QList< int >& ids)
+{
+    hideAnnotationOverlay(false);
+
+    foreach(int id, ids)
+    {
+        const QPointer< Model::Annotation > annotation = m_annotationIds.take(id);
+
+        if(annotation.isNull() || !m_annotations.contains(annotation.data()))
+        {
+            continue;
+        }
+
+        m_annotations.removeAll(annotation.data());
+        m_page->removeAnnotation(annotation.data());
+
+        annotation->deleteLater();
+    }
 
     refresh(false, true);
     emit wasModified();
@@ -1163,18 +1547,282 @@ void PageItem::eraseAnnotationAt(const QPointF& pos)
 
         if(m_normalizedTransform.mapRect(annotation->boundary()).contains(pos))
         {
-            hideAnnotationOverlay(false);
-
-            m_annotations.removeAt(index);
-            m_page->removeAnnotation(annotation);
-
-            annotation->deleteLater();
-
-            refresh(false, true);
-            emit wasModified();
+            removeAnnotationsWithUndo(QList< Model::Annotation* >() << annotation, tr("Erase"));
 
             return;
         }
+    }
+}
+
+void PageItem::beginTextSelection(const QPointF& pos, bool forHighlight)
+{
+    if(s_textSelectionOwner != 0 && s_textSelectionOwner != this)
+    {
+        s_textSelectionOwner->clearTextSelection();
+    }
+
+    s_textSelectionOwner = this;
+
+    hideAnnotationOverlay();
+    hideFormFieldOverlay();
+
+    m_selectingText = true;
+    m_selectionMoved = false;
+    m_selectionForHighlight = forHighlight;
+    m_selectionPressPos = pos;
+    m_selectionAnchor = caretAt(pos);
+}
+
+void PageItem::clearTextSelection()
+{
+    if(m_selectionStart < m_selectionEnd || m_selectingText)
+    {
+        m_selectionStart = m_selectionEnd = 0;
+        m_selectingText = false;
+
+        update();
+    }
+}
+
+bool PageItem::isNearText(const QPointF& pos) const
+{
+    foreach(const Model::TextWord& word, m_textWords)
+    {
+        if(m_normalizedTransform.mapRect(word.boundary).adjusted(-10.0, -4.0, 10.0, 4.0).contains(pos))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+int PageItem::wordAt(const QPointF& pos) const
+{
+    for(int index = 0; index < m_textWords.count(); ++index)
+    {
+        if(m_normalizedTransform.mapRect(m_textWords.at(index).boundary).adjusted(-2.0, -2.0, 2.0, 2.0).contains(pos))
+        {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+int PageItem::caretAt(const QPointF& pos) const
+{
+    // Find the closest word, then the character boundary closest to the cursor within it.
+
+    int closestWord = -1;
+    qreal closestDistance = 0.0;
+
+    for(int index = 0; index < m_textWords.count(); ++index)
+    {
+        const qreal distance = distanceToRect(m_normalizedTransform.mapRect(m_textWords.at(index).boundary), pos);
+
+        if(closestWord < 0 || distance < closestDistance)
+        {
+            closestWord = index;
+            closestDistance = distance;
+        }
+    }
+
+    if(closestWord < 0)
+    {
+        return 0;
+    }
+
+    const Model::TextWord& word = m_textWords.at(closestWord);
+    const QRectF wordRect = m_normalizedTransform.mapRect(word.boundary);
+    const bool horizontal = wordRect.width() >= wordRect.height() || word.text.length() < 2;
+
+    int caret = m_wordFirstChar.at(closestWord);
+
+    foreach(const QRectF& charBoundary, word.charBoundaries)
+    {
+        const QPointF center = m_normalizedTransform.mapRect(charBoundary).center();
+
+        if(horizontal ? pos.x() < center.x() : pos.y() < center.y())
+        {
+            break;
+        }
+
+        ++caret;
+    }
+
+    return caret;
+}
+
+QList< QRectF > PageItem::selectionRects() const
+{
+    QList< QRectF > rects;
+
+    if(m_selectionStart >= m_selectionEnd)
+    {
+        return rects;
+    }
+
+    for(int index = 0; index < m_textWords.count(); ++index)
+    {
+        const Model::TextWord& word = m_textWords.at(index);
+
+        const int first = qMax(m_selectionStart - m_wordFirstChar.at(index), 0);
+        const int last = qMin(m_selectionEnd - m_wordFirstChar.at(index), word.text.length());
+
+        if(first >= last)
+        {
+            continue;
+        }
+
+        QRectF rect;
+
+        for(int position = first; position < last && position < word.charBoundaries.count(); ++position)
+        {
+            rect = rect.isNull() ? word.charBoundaries.at(position) : rect.united(word.charBoundaries.at(position));
+        }
+
+        if(rect.isNull())
+        {
+            rect = word.boundary;
+        }
+
+        // Merge words on the same line into one rectangle, covering the spaces in between.
+        if(!rects.isEmpty() && onSameLine(rects.last(), rect) && rect.left() >= rects.last().left())
+        {
+            rects.last() = rects.last().united(rect);
+        }
+        else
+        {
+            rects.append(rect);
+        }
+    }
+
+    return rects;
+}
+
+bool PageItem::selectionContains(const QPointF& pos) const
+{
+    foreach(const QRectF& rect, selectionRects())
+    {
+        if(m_normalizedTransform.mapRect(rect).adjusted(-2.0, -2.0, 2.0, 2.0).contains(pos))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+QString PageItem::selectedText() const
+{
+    QString text;
+
+    for(int index = 0; index < m_textWords.count(); ++index)
+    {
+        const Model::TextWord& word = m_textWords.at(index);
+
+        const int first = qMax(m_selectionStart - m_wordFirstChar.at(index), 0);
+        const int last = qMin(m_selectionEnd - m_wordFirstChar.at(index), word.text.length());
+
+        if(first >= last)
+        {
+            continue;
+        }
+
+        text.append(word.text.mid(first, last - first));
+
+        const bool continues = m_selectionEnd > m_wordFirstChar.at(index) + word.text.length() && index + 1 < m_textWords.count();
+
+        if(continues)
+        {
+            if(!onSameLine(word.boundary, m_textWords.at(index + 1).boundary))
+            {
+                text.append(QLatin1Char('\n'));
+            }
+            else if(word.spaceAfter)
+            {
+                text.append(QLatin1Char(' '));
+            }
+        }
+    }
+
+    return text;
+}
+
+void PageItem::finishTextSelection()
+{
+    update();
+
+    if(!hasTextSelection())
+    {
+        return;
+    }
+
+    if(m_selectionForHighlight)
+    {
+        markSelection(Model::HighlightMarkup);
+        return;
+    }
+
+    // Like other Linux applications, put the selection into the primary selection.
+    if(QApplication::clipboard()->supportsSelection())
+    {
+        QApplication::clipboard()->setText(selectedText(), QClipboard::Selection);
+    }
+}
+
+void PageItem::showTextSelectionContextMenu(QPoint screenPos)
+{
+    QMenu menu;
+
+    const QAction* copyAction = menu.addAction(QIcon::fromTheme(QLatin1String("edit-copy")), tr("&Copy"));
+    menu.addSeparator();
+    const QAction* highlightAction = menu.addAction(QIcon::fromTheme(QLatin1String("draw-highlight")), tr("&Highlight"));
+    const QAction* underlineAction = menu.addAction(QIcon::fromTheme(QLatin1String("format-text-underline")), tr("&Underline"));
+    const QAction* strikeOutAction = menu.addAction(QIcon::fromTheme(QLatin1String("format-text-strikethrough")), tr("&Strike out"));
+
+    const QAction* action = menu.exec(screenPos);
+
+    if(action == copyAction)
+    {
+        QApplication::clipboard()->setText(selectedText());
+    }
+    else if(action == highlightAction)
+    {
+        markSelection(Model::HighlightMarkup);
+    }
+    else if(action == underlineAction)
+    {
+        markSelection(Model::UnderlineMarkup);
+    }
+    else if(action == strikeOutAction)
+    {
+        markSelection(Model::StrikeOutMarkup);
+    }
+}
+
+void PageItem::markSelection(Model::TextMarkupType type)
+{
+    const QList< QRectF > rects = selectionRects();
+
+    clearTextSelection();
+
+    if(rects.isEmpty() || !m_page->canAddAndRemoveAnnotations())
+    {
+        return;
+    }
+
+    // Highlights use the annotation colour (yellow by default), underline and strike out the drawing colour.
+    const QColor color = type == Model::HighlightMarkup ? s_settings->pageItem().annotationColor() : s_settings->pageItem().drawColor();
+
+    Model::Annotation* const annotation = m_page->addTextMarkupAnnotation(rects, type, color);
+
+    if(annotation != 0)
+    {
+        appendNewAnnotation(annotation);
+        commitNewAnnotations(QList< Model::Annotation* >() << annotation,
+                             type == Model::HighlightMarkup ? tr("Highlight") : type == Model::UnderlineMarkup ? tr("Underline") : tr("Strike out"));
     }
 }
 
@@ -1214,13 +1862,7 @@ void PageItem::showAnnotationContextMenu(Model::Annotation* annotation, QPoint s
 
         if(action == removeAnnotationAction)
         {
-            m_annotations.removeAll(annotation);
-            m_page->removeAnnotation(annotation);
-
-            annotation->deleteLater();
-
-            refresh(false, true);
-            emit wasModified();
+            removeAnnotationsWithUndo(QList< Model::Annotation* >() << annotation, tr("Remove annotation"));
         }
     }
 }
@@ -1684,6 +2326,29 @@ inline void PageItem::paintDrawing(QPainter* painter) const
         break;
     default:
         break;
+    }
+
+    painter->restore();
+}
+
+inline void PageItem::paintTextSelection(QPainter* painter) const
+{
+    if(m_selectionStart >= m_selectionEnd)
+    {
+        return;
+    }
+
+    painter->save();
+
+    QColor color = QApplication::palette().color(QPalette::Highlight);
+    color.setAlphaF(0.35);
+
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(color);
+
+    foreach(const QRectF& rect, selectionRects())
+    {
+        painter->drawRect(m_normalizedTransform.mapRect(rect));
     }
 
     painter->restore();

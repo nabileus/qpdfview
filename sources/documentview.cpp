@@ -28,6 +28,7 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include "documentview.h"
 
 #include <QApplication>
+#include <QClipboard>
 #include <QInputDialog>
 #include <QDateTime>
 #include <QDebug>
@@ -46,6 +47,7 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QScrollBar>
 #include <QTemporaryFile>
 #include <QTimer>
+#include <QUndoStack>
 #include <QUrl>
 
 #if QT_VERSION >= QT_VERSION_CHECK(5,0,0)
@@ -764,6 +766,7 @@ DocumentView::DocumentView(QWidget* parent) : QGraphicsView(parent),
     m_renderFlags(),
     m_highlightAll(false),
     m_rubberBandMode(ModifiersMode),
+    m_undoStack(new QUndoStack(this)),
     m_pageItems(),
     m_thumbnailItems(),
     m_highlight(0),
@@ -3002,8 +3005,25 @@ void DocumentView::prepareDocument(Model::Document* document, const QVector< Mod
     }
 }
 
+bool DocumentView::copySelectedText()
+{
+    foreach(const PageItem* page, m_pageItems)
+    {
+        if(page->hasTextSelection())
+        {
+            QApplication::clipboard()->setText(page->selectedText());
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void DocumentView::preparePages()
 {
+    // The page items are re-created, so the old undo history no longer applies.
+    m_undoStack->clear();
+
     m_pageItems.clear();
     m_pageItems.reserve(m_pages.count());
 
@@ -3012,6 +3032,7 @@ void DocumentView::preparePages()
         PageItem* page = new PageItem(m_pages.at(index), index);
 
         page->setRubberBandMode(m_rubberBandMode);
+        page->setUndoStack(m_undoStack);
 
         scene()->addItem(page);
         m_pageItems.append(page);

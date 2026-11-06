@@ -131,6 +131,13 @@ namespace Model
         Annotation* addFreeTextAnnotation(const QRectF& boundary, const QString& text, const QColor& color, qreal fontSize);
         void removeAnnotation(Annotation* annotation);
 
+        Annotation* addTextMarkupAnnotation(const QList< QRectF >& boundaries, TextMarkupType type, const QColor& color);
+
+        QVariant annotationState(Annotation* annotation) const;
+        Annotation* restoreAnnotation(const QVariant& state);
+
+        QList< TextWord > textWords() const;
+
         QList< FormField* > formFields() const;
 
     private:

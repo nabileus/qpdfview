@@ -1036,6 +1036,366 @@ Annotation* PdfPage::addFreeTextAnnotation(const QRectF& boundary, const QString
 #endif // HAS_POPPLER_20
 }
 
+Annotation* PdfPage::addTextMarkupAnnotation(const QList< QRectF >& boundaries, TextMarkupType type, const QColor& color)
+{
+    LOCK_PAGE
+
+#ifdef HAS_POPPLER_20
+
+    if(boundaries.isEmpty())
+    {
+        return 0;
+    }
+
+    Poppler::HighlightAnnotation* annotation = new Poppler::HighlightAnnotation();
+
+    switch(type)
+    {
+    default:
+    case HighlightMarkup:
+        annotation->setHighlightType(Poppler::HighlightAnnotation::Highlight);
+        break;
+    case UnderlineMarkup:
+        annotation->setHighlightType(Poppler::HighlightAnnotation::Underline);
+        break;
+    case StrikeOutMarkup:
+        annotation->setHighlightType(Poppler::HighlightAnnotation::StrikeOut);
+        break;
+    }
+
+    QList< Poppler::HighlightAnnotation::Quad > quads;
+    QRectF bounds;
+
+    foreach(const QRectF& rect, boundaries)
+    {
+        Poppler::HighlightAnnotation::Quad quad;
+        quad.points[0] = rect.topLeft();
+        quad.points[1] = rect.topRight();
+        quad.points[2] = rect.bottomRight();
+        quad.points[3] = rect.bottomLeft();
+        quad.capStart = false;
+        quad.capEnd = false;
+        quad.feather = 0.0;
+
+        quads.append(quad);
+        bounds = bounds.isNull() ? rect : bounds.united(rect);
+    }
+
+    annotation->setHighlightQuads(quads);
+
+    finishDrawingAnnotation(annotation, bounds, drawingStyle(color, 1.0));
+
+    m_page->addAnnotation(annotation);
+
+    return new PdfAnnotation(m_mutex, annotation);
+
+#else
+
+    Q_UNUSED(boundaries); Q_UNUSED(type); Q_UNUSED(color);
+
+    return 0;
+
+#endif // HAS_POPPLER_20
+}
+
+QVariant PdfPage::annotationState(Annotation* annotation) const
+{
+    LOCK_PAGE
+
+#if defined(HAS_POPPLER_20) && QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+
+    const Poppler::Annotation* const popplerAnnotation = static_cast< PdfAnnotation* >(annotation)->m_annotation;
+
+    if(popplerAnnotation == 0)
+    {
+        return QVariant();
+    }
+
+    QVariantMap state;
+
+    state.insert(QLatin1String("subType"), static_cast< int >(popplerAnnotation->subType()));
+    state.insert(QLatin1String("boundary"), popplerAnnotation->boundary());
+    state.insert(QLatin1String("contents"), popplerAnnotation->contents());
+    state.insert(QLatin1String("author"), popplerAnnotation->author());
+    state.insert(QLatin1String("color"), popplerAnnotation->style().color());
+    state.insert(QLatin1String("width"), popplerAnnotation->style().width());
+    state.insert(QLatin1String("opacity"), popplerAnnotation->style().opacity());
+
+    switch(popplerAnnotation->subType())
+    {
+    case Poppler::Annotation::AInk:
+    {
+        QVariantList paths;
+
+        foreach(const QVector< QPointF >& path, static_cast< const Poppler::InkAnnotation* >(popplerAnnotation)->inkPaths())
+        {
+            QVariantList points;
+
+            foreach(const QPointF& point, path)
+            {
+                points.append(point);
+            }
+
+            paths.append(QVariant(points));
+        }
+
+        state.insert(QLatin1String("paths"), paths);
+        break;
+    }
+    case Poppler::Annotation::ALine:
+    {
+        const Poppler::LineAnnotation* const line = static_cast< const Poppler::LineAnnotation* >(popplerAnnotation);
+
+        QVariantList points;
+
+        foreach(const QPointF& point, line->linePoints())
+        {
+            points.append(point);
+        }
+
+        state.insert(QLatin1String("points"), points);
+        state.insert(QLatin1String("lineType"), static_cast< int >(line->lineType()));
+        state.insert(QLatin1String("startStyle"), static_cast< int >(line->lineStartStyle()));
+        state.insert(QLatin1String("endStyle"), static_cast< int >(line->lineEndStyle()));
+        state.insert(QLatin1String("closed"), line->isLineClosed());
+        break;
+    }
+    case Poppler::Annotation::AGeom:
+    {
+        const Poppler::GeomAnnotation* const geom = static_cast< const Poppler::GeomAnnotation* >(popplerAnnotation);
+
+        state.insert(QLatin1String("geomType"), static_cast< int >(geom->geomType()));
+        state.insert(QLatin1String("innerColor"), geom->geomInnerColor());
+        break;
+    }
+    case Poppler::Annotation::AText:
+    {
+        const Poppler::TextAnnotation* const text = static_cast< const Poppler::TextAnnotation* >(popplerAnnotation);
+
+        state.insert(QLatin1String("textType"), static_cast< int >(text->textType()));
+        state.insert(QLatin1String("textFont"), text->textFont());
+        state.insert(QLatin1String("textColor"), text->textColor());
+        state.insert(QLatin1String("textIcon"), text->textIcon());
+        break;
+    }
+    case Poppler::Annotation::AHighlight:
+    {
+        const Poppler::HighlightAnnotation* const highlight = static_cast< const Poppler::HighlightAnnotation* >(popplerAnnotation);
+
+        QVariantList quads;
+
+        foreach(const Poppler::HighlightAnnotation::Quad& quad, highlight->highlightQuads())
+        {
+            quads.append(QVariant(QVariantList() << quad.points[0] << quad.points[1] << quad.points[2] << quad.points[3]));
+        }
+
+        state.insert(QLatin1String("highlightType"), static_cast< int >(highlight->highlightType()));
+        state.insert(QLatin1String("quads"), quads);
+        break;
+    }
+    default:
+        // Other annotation types (e.g. file attachments) cannot be re-created.
+        return QVariant();
+    }
+
+    return state;
+
+#else
+
+    Q_UNUSED(annotation);
+
+    return QVariant();
+
+#endif
+}
+
+Annotation* PdfPage::restoreAnnotation(const QVariant& state_)
+{
+    LOCK_PAGE
+
+#if defined(HAS_POPPLER_20) && QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+
+    const QVariantMap state = state_.toMap();
+
+    if(state.isEmpty())
+    {
+        return 0;
+    }
+
+    Poppler::Annotation* annotation = 0;
+
+    switch(state.value(QLatin1String("subType")).toInt())
+    {
+    case Poppler::Annotation::AInk:
+    {
+        QList< QVector< QPointF > > paths;
+
+        foreach(const QVariant& path, state.value(QLatin1String("paths")).toList())
+        {
+            QVector< QPointF > points;
+
+            foreach(const QVariant& point, path.toList())
+            {
+                points.append(point.toPointF());
+            }
+
+            paths.append(points);
+        }
+
+        Poppler::InkAnnotation* const ink = new Poppler::InkAnnotation();
+        ink->setInkPaths(paths);
+
+        annotation = ink;
+        break;
+    }
+    case Poppler::Annotation::ALine:
+    {
+        Poppler::LineAnnotation* const line = new Poppler::LineAnnotation(static_cast< Poppler::LineAnnotation::LineType >(state.value(QLatin1String("lineType")).toInt()));
+
+        QVector< QPointF > points;
+
+        foreach(const QVariant& point, state.value(QLatin1String("points")).toList())
+        {
+            points.append(point.toPointF());
+        }
+
+        line->setLinePoints(points);
+        line->setLineStartStyle(static_cast< Poppler::LineAnnotation::TermStyle >(state.value(QLatin1String("startStyle")).toInt()));
+        line->setLineEndStyle(static_cast< Poppler::LineAnnotation::TermStyle >(state.value(QLatin1String("endStyle")).toInt()));
+        line->setLineClosed(state.value(QLatin1String("closed")).toBool());
+
+        annotation = line;
+        break;
+    }
+    case Poppler::Annotation::AGeom:
+    {
+        Poppler::GeomAnnotation* const geom = new Poppler::GeomAnnotation();
+        geom->setGeomType(static_cast< Poppler::GeomAnnotation::GeomType >(state.value(QLatin1String("geomType")).toInt()));
+
+        const QColor innerColor = state.value(QLatin1String("innerColor")).value< QColor >();
+
+        if(innerColor.isValid())
+        {
+            geom->setGeomInnerColor(innerColor);
+        }
+
+        annotation = geom;
+        break;
+    }
+    case Poppler::Annotation::AText:
+    {
+        Poppler::TextAnnotation* const text = new Poppler::TextAnnotation(static_cast< Poppler::TextAnnotation::TextType >(state.value(QLatin1String("textType")).toInt()));
+
+        if(text->textType() == Poppler::TextAnnotation::InPlace)
+        {
+            text->setTextFont(state.value(QLatin1String("textFont")).value< QFont >());
+            text->setTextColor(state.value(QLatin1String("textColor")).value< QColor >());
+        }
+        else if(!state.value(QLatin1String("textIcon")).toString().isEmpty())
+        {
+            text->setTextIcon(state.value(QLatin1String("textIcon")).toString());
+        }
+
+        annotation = text;
+        break;
+    }
+    case Poppler::Annotation::AHighlight:
+    {
+        Poppler::HighlightAnnotation* const highlight = new Poppler::HighlightAnnotation();
+        highlight->setHighlightType(static_cast< Poppler::HighlightAnnotation::HighlightType >(state.value(QLatin1String("highlightType")).toInt()));
+
+        QList< Poppler::HighlightAnnotation::Quad > quads;
+
+        foreach(const QVariant& quadState, state.value(QLatin1String("quads")).toList())
+        {
+            const QVariantList points = quadState.toList();
+
+            if(points.count() != 4)
+            {
+                continue;
+            }
+
+            Poppler::HighlightAnnotation::Quad quad;
+
+            for(int index = 0; index < 4; ++index)
+            {
+                quad.points[index] = points.at(index).toPointF();
+            }
+
+            quad.capStart = false;
+            quad.capEnd = false;
+            quad.feather = 0.0;
+
+            quads.append(quad);
+        }
+
+        highlight->setHighlightQuads(quads);
+
+        annotation = highlight;
+        break;
+    }
+    default:
+        return 0;
+    }
+
+    finishDrawingAnnotation(annotation, state.value(QLatin1String("boundary")).toRectF(),
+                            drawingStyle(state.value(QLatin1String("color")).value< QColor >(),
+                                         state.value(QLatin1String("width")).toReal(),
+                                         state.value(QLatin1String("opacity")).toReal()));
+
+    annotation->setContents(state.value(QLatin1String("contents")).toString());
+    annotation->setAuthor(state.value(QLatin1String("author")).toString());
+
+    m_page->addAnnotation(annotation);
+
+    return new PdfAnnotation(m_mutex, annotation);
+
+#else
+
+    Q_UNUSED(state_);
+
+    return 0;
+
+#endif
+}
+
+QList< TextWord > PdfPage::textWords() const
+{
+    LOCK_PAGE
+
+    QList< TextWord > words;
+
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+
+    const QSizeF pageSize = m_page->pageSizeF();
+
+    if(pageSize.isEmpty())
+    {
+        return words;
+    }
+
+    const QTransform normalize = QTransform::fromScale(1.0 / pageSize.width(), 1.0 / pageSize.height());
+
+    for(const std::unique_ptr< Poppler::TextBox >& textBox : m_page->textList())
+    {
+        TextWord word;
+        word.text = textBox->text();
+        word.boundary = normalize.mapRect(textBox->boundingBox());
+        word.spaceAfter = textBox->hasSpaceAfter();
+
+        for(int index = 0; index < word.text.length(); ++index)
+        {
+            word.charBoundaries.append(normalize.mapRect(textBox->charBoundingBox(index)));
+        }
+
+        words.append(word);
+    }
+
+#endif // QT_VERSION
+
+    return words;
+}
+
 void PdfPage::removeAnnotation(Annotation* annotation)
 {
     LOCK_PAGE
