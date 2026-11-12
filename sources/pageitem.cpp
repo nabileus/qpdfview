@@ -172,6 +172,15 @@ inline qreal distanceToRect(const QRectF& rect, const QPointF& point)
 
 Settings* PageItem::s_settings = 0;
 PageItem* PageItem::s_textSelectionOwner = 0;
+QList< PageItem* > PageItem::s_textWordsRecentlyUsed;
+
+namespace
+{
+
+// Number of pages whose word boxes are kept in memory.
+const int maximumTextWordPages = 4;
+
+} // anonymous
 int PageItem::s_nextAnnotationId = 1;
 
 PageItem::PageItem(Model::Page* page, int index, PaintMode paintMode, QGraphicsItem* parent) : QGraphicsObject(parent),
@@ -192,7 +201,8 @@ PageItem::PageItem(Model::Page* page, int index, PaintMode paintMode, QGraphicsI
     m_undoStack(),
     m_annotationIds(),
     m_textWords(),
-    m_loadedTextWords(),
+    m_loadTextWords(0),
+    m_textWordsLoaded(false),
     m_wordFirstChar(),
     m_charCount(0),
     m_selectionAnchor(-1),
@@ -245,6 +255,13 @@ PageItem::~PageItem()
         delete m_loadInteractiveElements;
         m_loadInteractiveElements = 0;
     }
+
+    if(m_loadTextWords != 0)
+    {
+        m_loadTextWords->waitForFinished();
+    }
+
+    s_textWordsRecentlyUsed.removeAll(this);
 
     hideAnnotationOverlay(false);
     hideFormFieldOverlay(false);
@@ -504,10 +521,13 @@ void PageItem::hideFormFieldOverlay(bool deleteLater)
 
 void PageItem::hoverEnterEvent(QGraphicsSceneHoverEvent*)
 {
+    startLoadTextWords();
 }
 
 void PageItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event)
 {
+    startLoadTextWords();
+
     if(m_rubberBandMode == DrawHighlighterMode)
     {
         // The highlighter marks text when used on text.
@@ -997,10 +1017,40 @@ void PageItem::contextMenuEvent(QGraphicsSceneContextMenuEvent* event)
 
 void PageItem::on_loadInteractiveElements_finished()
 {
+    update();
+}
+
+void PageItem::startLoadTextWords()
+{
+    if(m_textWordsLoaded)
+    {
+        s_textWordsRecentlyUsed.removeAll(this);
+        s_textWordsRecentlyUsed.append(this);
+        return;
+    }
+
+    if(thumbnailMode() || presentationMode() || m_loadTextWords != 0)
+    {
+        return;
+    }
+
+    m_loadTextWords = new QFutureWatcher< QList< Model::TextWord > >(this);
+    connect(m_loadTextWords, SIGNAL(finished()), SLOT(on_loadTextWords_finished()));
+
+    Model::Page* const page = m_page;
+    m_loadTextWords->setFuture(QtConcurrent::run([page]() { return page->textWords(); }));
+}
+
+void PageItem::on_loadTextWords_finished()
+{
     clearTextSelection();
 
-    m_textWords = m_loadedTextWords;
-    m_loadedTextWords.clear();
+    m_textWords = m_loadTextWords->result();
+    m_textWordsLoaded = true;
+
+    // Discard the watcher so that its future no longer holds a copy of the words.
+    m_loadTextWords->deleteLater();
+    m_loadTextWords = 0;
 
     m_wordFirstChar.clear();
     m_wordFirstChar.reserve(m_textWords.count());
@@ -1013,7 +1063,35 @@ void PageItem::on_loadInteractiveElements_finished()
         m_charCount += word.text.length();
     }
 
+    s_textWordsRecentlyUsed.removeAll(this);
+    s_textWordsRecentlyUsed.append(this);
+
+    for(int index = 0; s_textWordsRecentlyUsed.count() > maximumTextWordPages && index < s_textWordsRecentlyUsed.count() - 1;)
+    {
+        PageItem* const page = s_textWordsRecentlyUsed.at(index);
+
+        if(page == s_textSelectionOwner)
+        {
+            ++index;
+            continue;
+        }
+
+        page->dropTextWords();
+    }
+
     update();
+}
+
+void PageItem::dropTextWords()
+{
+    s_textWordsRecentlyUsed.removeAll(this);
+
+    clearTextSelection();
+
+    m_textWords = QList< Model::TextWord >();
+    m_wordFirstChar = QVector< int >();
+    m_charCount = 0;
+    m_textWordsLoaded = false;
 }
 
 void PageItem::updateCropRect()
@@ -1123,9 +1201,6 @@ void PageItem::loadInteractiveElements()
     }
 
     m_formFields = formFields;
-
-    // Handed over to the GUI thread in on_loadInteractiveElements_finished.
-    m_loadedTextWords = m_page->textWords();
 }
 
 void PageItem::copyToClipboard(QPoint screenPos)

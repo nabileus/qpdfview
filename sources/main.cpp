@@ -31,6 +31,7 @@ along with qpdfview.  If not, see <http://www.gnu.org/licenses/>.
 #include <QLibraryInfo>
 #include <QMessageBox>
 #include <QScopedPointer>
+#include <QTimer>
 #include <QTranslator>
 
 #ifdef WITH_DBUS
@@ -67,6 +68,12 @@ typedef synctex_node_t synctex_node_p;
 #include "signalhandler.h"
 
 #endif // WITH_SIGNALS
+
+#if defined(__GLIBC__)
+
+#include <malloc.h>
+
+#endif // __GLIBC__
 
 #ifdef Q_OS_WIN
 
@@ -558,6 +565,16 @@ int main(int argc, char** argv)
     {
         mainWindow->startSearch(searchText);
     }
+
+#if defined(__GLIBC__)
+
+    // Rendered pages are allocated on worker threads and freed on the GUI thread, which leaves
+    // glibc holding on to large amounts of free memory. Periodically hand it back to the system.
+    QTimer trimTimer;
+    QObject::connect(&trimTimer, &QTimer::timeout, []() { malloc_trim(0); });
+    trimTimer.start(20 * 1000);
+
+#endif // __GLIBC__
 
     return application.exec();
 }

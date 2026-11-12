@@ -160,6 +160,7 @@ protected:
 
 private slots:
     void on_loadInteractiveElements_finished();
+    void on_loadTextWords_finished();
 
 private:
     Q_DISABLE_COPY(PageItem)
@@ -220,8 +221,11 @@ private:
 
     // text selection
 
+    // Word boxes are loaded on demand (when the mouse enters the page) and only kept
+    // for a few recently used pages, since they are large for text-heavy documents.
     QList< Model::TextWord > m_textWords;
-    QList< Model::TextWord > m_loadedTextWords;
+    QFutureWatcher< QList< Model::TextWord > >* m_loadTextWords;
+    bool m_textWordsLoaded;
     QVector< int > m_wordFirstChar;
     int m_charCount;
 
@@ -234,6 +238,10 @@ private:
     QPointF m_selectionPressPos;
 
     static PageItem* s_textSelectionOwner;
+    static QList< PageItem* > s_textWordsRecentlyUsed;
+
+    void startLoadTextWords();
+    void dropTextWords();
 
     void beginTextSelection(const QPointF& pos, bool forHighlight);
     bool isNearText(const QPointF& pos) const;

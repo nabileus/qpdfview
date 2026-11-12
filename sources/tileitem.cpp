@@ -307,7 +307,7 @@ namespace
 const qreal previewExtent = 700.0;
 
 // Memory shared by all page previews.
-const qint64 previewBudget = 128 * 1024 * 1024;
+const qint64 previewBudget = 48 * 1024 * 1024;
 
 inline qint64 pixmapBytes(const QPixmap& pixmap)
 {
